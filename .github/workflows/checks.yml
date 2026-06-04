@@ -1,0 +1,34 @@
+name: checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  leak-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for owner/machine-specific data and secrets
+        run: bash scripts/leak-check.sh
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Syntax + import check
+        run: |
+          python -m compileall server/
+          pip install -q -r server/requirements.txt
+          cd server && python -c "import main"
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n all scripts
+        run: |
+          bash -n install.sh bin/bopbop scripts/leak-check.sh .githooks/pre-commit

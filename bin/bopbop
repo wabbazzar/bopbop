@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# bopbop — CLI for the BopBop personal agent.
+#
+#   bopbop init     scaffold ~/.bopbop (context dir, data dir, env file)
+#   bopbop doctor   check the installation end to end
+#   bopbop run      run the server in the foreground (dev)
+#
+# Installation itself (venv, systemd unit, signal-cli container) is
+# handled by install.sh in the repo root.
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BOPBOP_HOME="${BOPBOP_HOME:-$HOME/.bopbop}"
+ENV_FILE="$BOPBOP_HOME/env"
+
+note() { printf '%s\n' "$*"; }
+pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
+fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAILURES=$((FAILURES+1)); }
+warn() { printf '  \033[33mWARN\033[0m %s\n' "$*"; }
+
+cmd_init() {
+    local force=0
+    [[ "${1:-}" == "--force" ]] && force=1
+
+    mkdir -p "$BOPBOP_HOME/data"
+
+    if [[ -d "$BOPBOP_HOME/context" && $force -eq 0 ]]; then
+        note "context dir already exists: $BOPBOP_HOME/context (use --force to overwrite templates)"
+    else
+        mkdir -p "$BOPBOP_HOME/context/scripts"
+        cp "$REPO_DIR/templates/context/CLAUDE.md" "$BOPBOP_HOME/context/CLAUDE.md"
+        cp "$REPO_DIR/templates/context/personality.md" "$BOPBOP_HOME/context/personality.md"
+        note "scaffolded context dir: $BOPBOP_HOME/context"
+    fi
+
+    if [[ -f "$ENV_FILE" && $force -eq 0 ]]; then
+        note "env file already exists: $ENV_FILE"
+    else
+        cp "$REPO_DIR/templates/env.example" "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+        note "wrote env template: $ENV_FILE"
+    fi
+
+    cat <<EOF
+
+Next steps:
+  1. Edit $ENV_FILE — set SIGNAL_ACCOUNT and SIGNAL_ALLOWED_USERS
+  2. Edit $BOPBOP_HOME/context/personality.md — tell the agent who you are
+  3. Run ./install.sh from the repo to set up the service + signal-cli
+  4. bopbop doctor
+EOF
+}
+
+cmd_doctor() {
+    FAILURES=0
+    note "bopbop doctor — $(date '+%Y-%m-%d %H:%M:%S')"
+
+    # env file
+    if [[ -f "$ENV_FILE" ]]; then
+        pass "env file present ($ENV_FILE)"
+        # shellcheck disable=SC1090
+        set -a; source "$ENV_FILE"; set +a
+        if [[ "${SIGNAL_ACCOUNT:-}" == "+15550000000" || -z "${SIGNAL_ACCOUNT:-}" ]]; then
+            fail "SIGNAL_ACCOUNT is unset or still the placeholder"
+        else
+            pass "SIGNAL_ACCOUNT configured"
+        fi
+        if [[ -z "${SIGNAL_ALLOWED_USERS:-}" || "${SIGNAL_ALLOWED_USERS:-}" == "+15550000000" ]]; then
+            fail "SIGNAL_ALLOWED_USERS is unset or still the placeholder"
+        else
+            pass "SIGNAL_ALLOWED_USERS configured"
+        fi
+        if [[ "${BOPBOP_REQUIRE_BEARER:-0}" == "1" && -z "${BOPBOP_BEARER_TOKEN:-}" ]]; then
+            fail "BOPBOP_REQUIRE_BEARER=1 but BOPBOP_BEARER_TOKEN is empty"
+        fi
+    else
+        fail "no env file at $ENV_FILE — run: bopbop init"
+    fi
+
+    # context dir
+    local ctx="${BOPBOP_CONTEXT_DIR:-$BOPBOP_HOME/context}"
+    ctx="${ctx/#\~/$HOME}"
+    if [[ -f "$ctx/CLAUDE.md" ]]; then
+        pass "context dir has CLAUDE.md ($ctx)"
+    else
+        fail "context dir missing CLAUDE.md ($ctx) — run: bopbop init"
+    fi
+
+    # claude CLI
+    local claude_bin="${BOPBOP_CLAUDE_BIN:-claude}"
+    if command -v "$claude_bin" >/dev/null; then
+        pass "claude CLI found ($($claude_bin --version 2>/dev/null | head -1))"
+    else
+        fail "claude CLI not found ('$claude_bin') — install Claude Code first"
+    fi
+
+    # venv
+    if [[ -x "$REPO_DIR/server/.venv/bin/uvicorn" ]]; then
+        pass "server venv present"
+    else
+        fail "server venv missing — run ./install.sh"
+    fi
+
+    # signal-cli
+    local sig_url="${SIGNAL_HTTP_URL:-http://127.0.0.1:8080}"
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$sig_url/v1/health" || echo 000)
+    if [[ "$code" == "204" || "$code" == "200" ]]; then
+        pass "signal-cli reachable at $sig_url"
+        if [[ -n "${SIGNAL_ACCOUNT:-}" ]]; then
+            if curl -s --max-time 5 "$sig_url/v1/accounts" | grep -q -- "${SIGNAL_ACCOUNT}"; then
+                pass "Signal account ${SIGNAL_ACCOUNT:0:5}… is linked"
+            else
+                fail "account not linked yet — open $sig_url/v1/qrcodelink?device_name=bopbop and scan with Signal (Settings → Linked Devices)"
+            fi
+        fi
+    else
+        fail "signal-cli not reachable at $sig_url (http $code) — is the container running?"
+    fi
+
+    # service
+    if systemctl --user is-active --quiet bopbop.service 2>/dev/null; then
+        pass "bopbop.service active"
+        local hcode
+        hcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8090/api/health || echo 000)
+        [[ "$hcode" == "200" ]] && pass "API healthy on :8090" || fail "API not responding on :8090 (http $hcode)"
+    else
+        warn "bopbop.service not active (fine if you haven't installed/started yet)"
+    fi
+
+    echo
+    if (( FAILURES == 0 )); then
+        note "All checks passed. Text yourself on Signal (Note to Self) to talk to your agent."
+    else
+        note "$FAILURES check(s) failed."
+        exit 1
+    fi
+}
+
+cmd_run() {
+    [[ -f "$ENV_FILE" ]] || { note "no env file — run: bopbop init"; exit 1; }
+    set -a; # shellcheck disable=SC1090
+    source "$ENV_FILE"; set +a
+    cd "$REPO_DIR/server"
+    exec "$REPO_DIR/server/.venv/bin/uvicorn" main:app --host 127.0.0.1 --port 8090
+}
+
+case "${1:-}" in
+    init)   shift; cmd_init "$@" ;;
+    doctor) shift; cmd_doctor "$@" ;;
+    run)    shift; cmd_run "$@" ;;
+    *)      sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
