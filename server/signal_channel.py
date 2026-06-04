@@ -84,6 +84,11 @@ class SignalConfig:
         problems: list[str] = []
         if not self.signal_account:
             problems.append("SIGNAL_ACCOUNT not set")
+        elif self.signal_account == "+15550000000":
+            problems.append(
+                "SIGNAL_ACCOUNT is still the template placeholder — "
+                "edit ~/.bopbop/env with your real number"
+            )
         if not self.allowed_users:
             problems.append("SIGNAL_ALLOWED_USERS not set")
         return problems

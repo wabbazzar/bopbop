@@ -38,7 +38,8 @@ git clone https://github.com/wabbazzar/bopbop && cd bopbop
 ```
 
 The installer is idempotent. It scaffolds `~/.bopbop/`, creates the
-server venv, starts a `signal-cli-rest-api` container, installs
+server venv (the clone must stay where you installed from — the systemd
+unit points into it), starts a `signal-cli-rest-api` container, installs
 `bopbop.service` (systemd user unit), and runs `bopbop doctor`.
 
 One-time Signal link:
@@ -65,8 +66,9 @@ BopBop runs Claude with `--dangerously-skip-permissions`: the agent has
 **full access to your machine** — that's the point, and the risk.
 
 - **Sender allowlist is mandatory.** The Signal channel refuses to start
-  without `SIGNAL_ALLOWED_USERS`; messages from anyone else are dropped
-  before Claude ever sees them.
+  without `SIGNAL_ALLOWED_USERS`; inbound messages from senders not on it
+  are dropped before Claude ever sees them. (Your own Note-to-Self always
+  reaches the agent — those messages are you.)
 - **The API binds 127.0.0.1 only.** If you proxy it (e.g. Tailscale
   Serve), your VPN is the trust boundary. Exposing it wider requires
   `BOPBOP_REQUIRE_BEARER=1` + a token — and exposing it to the public
