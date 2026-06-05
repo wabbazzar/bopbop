@@ -58,7 +58,46 @@ Then text yourself in Signal (Note to Self). That's your agent.
 bin/bopbop init      scaffold ~/.bopbop (context dir, data dir, env file)
 bin/bopbop doctor    end-to-end health check
 bin/bopbop run       run the server in the foreground (dev)
+bin/bopbop pack      install / list / remove context packs
 ```
+
+## Context packs
+
+A **pack** is an installable capability bundle for your agent — a git repo
+(or local dir) shaped like:
+
+```
+pack.toml             # name, description, fragment, install_hook, required_env
+CLAUDE.fragment.md    # spliced into your context CLAUDE.md (managed markers)
+scripts/ …            # whatever the fragment documents
+```
+
+```bash
+bin/bopbop pack install https://github.com/someone/some-pack
+bin/bopbop pack list
+bin/bopbop pack remove some-pack
+```
+
+Install clones the pack into `context/packs/<name>` and splices its
+fragment into your context `CLAUDE.md` between `<!-- bopbop-pack:NAME -->`
+markers — so every turn knows the capability exists. Reinstall is
+idempotent; remove strips the fragment again.
+
+`pack.toml` keys (flat `key = "value"` only):
+
+| key | meaning |
+|---|---|
+| `name` | kebab-case pack name (required) |
+| `description` | one-liner shown in `pack list` |
+| `fragment` | path to the CLAUDE.md fragment to splice |
+| `install_hook` | script for system-level setup (timers, deps) |
+| `required_env` | comma-separated vars the pack needs in `~/.bopbop/env` |
+
+**Hooks never run automatically.** A pack's `install_hook` is arbitrary
+code; `pack install` prints it and tells you how to run it — or pass
+`--run-hook` if you've read it and trust it. `bopbop doctor` checks every
+installed pack's `required_env`. Packs may live at the repo root or in a
+`pack/` subdir, so a project can ship its pack alongside its main code.
 
 ## Security model — read this
 

@@ -4,6 +4,7 @@
 #   bopbop init     scaffold ~/.bopbop (context dir, data dir, env file)
 #   bopbop doctor   check the installation end to end
 #   bopbop run      run the server in the foreground (dev)
+#   bopbop pack     install/list/remove context packs (capability bundles)
 #
 # Installation itself (venv, systemd unit, signal-cli container) is
 # handled by install.sh in the repo root.
@@ -15,6 +16,26 @@ BOPBOP_HOME="${BOPBOP_HOME:-$HOME/.bopbop}"
 ENV_FILE="$BOPBOP_HOME/env"
 
 note() { printf '%s\n' "$*"; }
+
+# Resolve the active context dir: env file wins, else the default scaffold.
+context_dir() {
+    # precedence: BOPBOP_CONTEXT_DIR env var > env file > default scaffold
+    local ctx="$BOPBOP_HOME/context"
+    if [[ -n "${BOPBOP_CONTEXT_DIR:-}" ]]; then
+        ctx="$BOPBOP_CONTEXT_DIR"
+    elif [[ -f "$ENV_FILE" ]]; then
+        local v
+        v=$(grep -E '^BOPBOP_CONTEXT_DIR=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+        [[ -n "$v" ]] && ctx="$v"
+    fi
+    printf '%s' "${ctx/#\~/$HOME}"
+}
+
+# Read one flat `key = "value"` entry from a pack.toml.
+toml_get() { # toml_get <file> <key> — empty (exit 0) when the key is absent
+    grep -E "^${2}[[:space:]]*=" "$1" 2>/dev/null | head -1 \
+        | sed -E 's/^[^=]+=[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true
+}
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAILURES=$((FAILURES+1)); }
 warn() { printf '  \033[33mWARN\033[0m %s\n' "$*"; }
@@ -55,6 +76,9 @@ EOF
 cmd_doctor() {
     FAILURES=0
     note "bopbop doctor — $(date '+%Y-%m-%d %H:%M:%S')"
+    # capture caller-supplied context override before the env file is sourced,
+    # so doctor and `pack install` agree on which context dir is active
+    local _ctx_env="${BOPBOP_CONTEXT_DIR:-}"
 
     # env file
     if [[ -f "$ENV_FILE" ]]; then
@@ -78,14 +102,35 @@ cmd_doctor() {
         fail "no env file at $ENV_FILE — run: bopbop init"
     fi
 
-    # context dir
-    local ctx="${BOPBOP_CONTEXT_DIR:-$BOPBOP_HOME/context}"
+    # context dir (same precedence as context_dir(): env var > env file > default)
+    local ctx="${_ctx_env:-${BOPBOP_CONTEXT_DIR:-$BOPBOP_HOME/context}}"
     ctx="${ctx/#\~/$HOME}"
     if [[ -f "$ctx/CLAUDE.md" ]]; then
         pass "context dir has CLAUDE.md ($ctx)"
     else
         fail "context dir missing CLAUDE.md ($ctx) — run: bopbop init"
     fi
+
+    # installed packs + their required env
+    local t pname preq missing v
+    for t in "$ctx"/packs/*/pack.toml; do
+        [[ -f "$t" ]] || continue
+        pname=$(toml_get "$t" name)
+        preq=$(toml_get "$t" required_env)
+        missing=""
+        if [[ -n "$preq" ]]; then
+            IFS=',' read -ra _vars <<<"$preq"
+            for v in "${_vars[@]}"; do
+                v="${v// /}"
+                grep -qE "^$v=" "$ENV_FILE" 2>/dev/null || missing+="$v "
+            done
+        fi
+        if [[ -z "$missing" ]]; then
+            pass "pack '$pname' installed"
+        else
+            fail "pack '$pname' missing required env: $missing(add to $ENV_FILE)"
+        fi
+    done
 
     # claude CLI
     local claude_bin="${BOPBOP_CLAUDE_BIN:-claude}"
@@ -138,6 +183,134 @@ cmd_doctor() {
     fi
 }
 
+# --- packs -------------------------------------------------------------------
+# A context pack is a directory (usually a git repo) that teaches the agent
+# a capability:
+#   pack.toml             name, description, fragment, install_hook, required_env
+#   CLAUDE.fragment.md    spliced into the context dir's CLAUDE.md between
+#                         <!-- bopbop-pack:NAME --> markers (idempotent)
+#   scripts/ …            anything the fragment documents
+# Hooks are arbitrary code and NEVER run unless you pass --run-hook.
+
+_strip_fragment() { # _strip_fragment <claude_md> <name>
+    local f="$1" n="$2" tmp
+    tmp=$(mktemp)
+    awk -v b="<!-- bopbop-pack:$n -->" -v e="<!-- /bopbop-pack:$n -->" \
+        '$0==b{skip=1;next} $0==e{skip=0;next} !skip' "$f" > "$tmp"
+    # also trim a trailing blank-line pileup
+    awk 'NF{blank=0} !NF{blank++} blank<3' "$tmp" > "$f"
+    rm -f "$tmp"
+}
+
+cmd_pack_install() {
+    local src="" run_hook=0
+    for a in "$@"; do
+        case "$a" in
+            --run-hook) run_hook=1 ;;
+            *) src="$a" ;;
+        esac
+    done
+    [[ -n "$src" ]] || { note "usage: bopbop pack install <git-url|path> [--run-hook]"; exit 1; }
+
+    local ctx; ctx=$(context_dir)
+    [[ -d "$ctx" ]] || { note "context dir not found: $ctx — run: bopbop init"; exit 1; }
+
+    # Fetch into a temp dir first so we can read pack.toml for the real name.
+    _PACK_TMP=$(mktemp -d)
+    trap 'rm -rf "${_PACK_TMP:-}"' EXIT
+    local tmp="$_PACK_TMP"
+    if [[ -d "$src" ]]; then
+        cp -r "$src/." "$tmp/"
+    else
+        git clone --quiet --depth 1 "$src" "$tmp" || { note "clone failed: $src"; exit 1; }
+    fi
+    # Packs may live at the repo root or in a pack/ subdir.
+    local pdir="$tmp"
+    [[ -f "$pdir/pack.toml" ]] || pdir="$tmp/pack"
+    [[ -f "$pdir/pack.toml" ]] || { note "no pack.toml found in $src (looked at root and pack/)"; exit 1; }
+
+    local name desc fragment hook req_env
+    name=$(toml_get "$pdir/pack.toml" name)
+    desc=$(toml_get "$pdir/pack.toml" description)
+    fragment=$(toml_get "$pdir/pack.toml" fragment)
+    hook=$(toml_get "$pdir/pack.toml" install_hook)
+    req_env=$(toml_get "$pdir/pack.toml" required_env)
+    [[ -n "$name" ]] || { note "pack.toml has no name"; exit 1; }
+    [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { note "invalid pack name '$name' (use lowercase kebab-case)"; exit 1; }
+
+    local dest="$ctx/packs/$name"
+    mkdir -p "$ctx/packs"
+    [[ -d "$dest" ]] && note "pack '$name' already installed — reinstalling" && rm -rf "$dest"
+    cp -r "$pdir" "$dest"
+    note "installed pack '$name' → $dest"
+
+    # Splice the fragment into the context CLAUDE.md (replace any prior block).
+    if [[ -n "$fragment" && -f "$dest/$fragment" ]]; then
+        local cm="$ctx/CLAUDE.md"
+        touch "$cm"
+        _strip_fragment "$cm" "$name"
+        {
+            echo ""
+            echo "<!-- bopbop-pack:$name -->"
+            cat "$dest/$fragment"
+            echo "<!-- /bopbop-pack:$name -->"
+        } >> "$cm"
+        note "spliced $fragment into $cm"
+    fi
+
+    # Required env: report, don't guess.
+    if [[ -n "$req_env" ]]; then
+        IFS=',' read -ra vars <<<"$req_env"
+        for v in "${vars[@]}"; do
+            v="${v// /}"
+            grep -qE "^$v=" "$ENV_FILE" 2>/dev/null \
+                && note "required env $v: present in $ENV_FILE" \
+                || note "required env $v: MISSING — add it to $ENV_FILE"
+        done
+    fi
+
+    # Install hook: opt-in only.
+    if [[ -n "$hook" ]]; then
+        if (( run_hook )); then
+            note "running install hook: $hook"
+            (cd "$dest" && bash "$hook")
+        else
+            note "pack ships an install hook ($hook) — NOT run. Inspect it, then:"
+            note "  cd $dest && bash $hook    # or reinstall with --run-hook"
+        fi
+    fi
+    [[ -n "$desc" ]] && note "✓ $name — $desc"
+}
+
+cmd_pack_list() {
+    local ctx; ctx=$(context_dir)
+    local found=0
+    for t in "$ctx"/packs/*/pack.toml; do
+        [[ -f "$t" ]] || continue
+        found=1
+        printf '%-24s %s\n' "$(toml_get "$t" name)" "$(toml_get "$t" description)"
+    done
+    (( found )) || note "no packs installed in $ctx/packs/"
+}
+
+cmd_pack_remove() {
+    local name="${1:?usage: bopbop pack remove <name>}"
+    local ctx; ctx=$(context_dir)
+    [[ -d "$ctx/packs/$name" ]] || { note "pack '$name' not installed"; exit 1; }
+    rm -rf "$ctx/packs/$name"
+    [[ -f "$ctx/CLAUDE.md" ]] && _strip_fragment "$ctx/CLAUDE.md" "$name"
+    note "removed pack '$name' (its CLAUDE.md fragment too)"
+}
+
+cmd_pack() {
+    case "${1:-}" in
+        install) shift; cmd_pack_install "$@" ;;
+        list)    shift; cmd_pack_list "$@" ;;
+        remove)  shift; cmd_pack_remove "$@" ;;
+        *) note "usage: bopbop pack {install <git-url|path> [--run-hook] | list | remove <name>}"; exit 1 ;;
+    esac
+}
+
 cmd_run() {
     [[ -f "$ENV_FILE" ]] || { note "no env file — run: bopbop init"; exit 1; }
     set -a; # shellcheck disable=SC1090
@@ -150,5 +323,6 @@ case "${1:-}" in
     init)   shift; cmd_init "$@" ;;
     doctor) shift; cmd_doctor "$@" ;;
     run)    shift; cmd_run "$@" ;;
-    *)      sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    pack)   shift; cmd_pack "$@" ;;
+    *)      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
