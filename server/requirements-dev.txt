@@ -1,0 +1,5 @@
+# Dev/test dependencies. Install into the venv with:
+#   VIRTUAL_ENV=.venv uv pip install -r requirements-dev.txt
+# (httpx, needed by fastapi's TestClient, is already a runtime dep.)
+-r requirements.txt
+pytest>=8.0

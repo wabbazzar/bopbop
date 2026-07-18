@@ -103,6 +103,31 @@ async def chat(req: ChatReq, authorization: str | None = Header(None)):
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
+class ThreadRecordReq(BaseModel):
+    peer: str
+    text: str
+    channel: str = "signal"
+    role: str = "assistant"
+    source: str = "external"
+
+
+@app.post("/api/thread/record")
+async def thread_record(
+    req: ThreadRecordReq, authorization: str | None = Header(None)
+):
+    """Record a message that reached a channel thread out-of-band — e.g. an
+    automated alert pushed straight to the messaging backend, bypassing a
+    normal turn. It's attributed to the peer's persistent conversation so the
+    next turn's prompt can surface it (see signal_channel prompt injection),
+    letting the agent field replies to messages it didn't itself generate."""
+    _auth(authorization)
+    if not req.peer or not req.text:
+        raise HTTPException(400, "peer and text are required")
+    cid = db.get_or_create_conversation_for_peer(req.channel, req.peer)
+    mid = db.add_message(cid, req.role, req.text, source=(req.source or "external"))
+    return {"ok": True, "conversation_id": cid, "message_id": mid}
+
+
 class InjectReq(BaseModel):
     message: str
 

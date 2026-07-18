@@ -283,6 +283,7 @@ def _extract_message(cfg: SignalConfig, data: dict) -> dict | None:
             "sender": cfg.signal_account,
             "text": text,
             "attachments": attachments,
+            "quote": _extract_quote(sent),
         }
 
     sender = env.get("sourceNumber") or env.get("source")
@@ -300,7 +301,23 @@ def _extract_message(cfg: SignalConfig, data: dict) -> dict | None:
     attachments = _parse_attachments(data_msg.get("attachments") or [])
     if not text and not attachments:
         return None
-    return {"sender": sender, "text": text, "attachments": attachments}
+    return {
+        "sender": sender,
+        "text": text,
+        "attachments": attachments,
+        "quote": _extract_quote(data_msg),
+    }
+
+
+def _extract_quote(msg: dict) -> str | None:
+    """The text of the message this one is a reply to, if any. Signal carries
+    it in the envelope, so a reply-to keeps its referent even when the quoted
+    message never passed through BopBop."""
+    quote = msg.get("quote") or {}
+    if not isinstance(quote, dict):
+        return None
+    qtext = (quote.get("text") or "").strip()
+    return qtext or None
 
 
 async def _download_attachment(cfg: SignalConfig, att: dict) -> Path | None:
@@ -341,11 +358,39 @@ async def _download_attachment(cfg: SignalConfig, att: dict) -> Path | None:
         return None
 
 
-def _compose_prompt(text: str, attachment_paths: list[Path]) -> str:
+def _format_thread_context(pushes: list[dict]) -> str:
+    """Render out-of-band thread messages (e.g. notify.sh alerts) as a compact
+    prompt preamble so a reply to one of them has its context."""
+    if not pushes:
+        return ""
+    lines = []
+    for p in pushes:
+        stamp = time.strftime("%H:%M", time.localtime(p.get("created_at") or 0))
+        src = p.get("source") or "automated"
+        body = " ".join((p.get("content") or "").split())
+        lines.append(f"  - ({src}, {stamp}) {body}")
+    return (
+        "[thread-context] Messages in this Signal thread since your last turn — "
+        "some sent automatically on your behalf, not typed by you. The user may "
+        "be replying to one of these:\n" + "\n".join(lines) + "\n\n"
+    )
+
+
+def _compose_prompt(
+    text: str,
+    attachment_paths: list[Path],
+    thread_context: list[dict] | None = None,
+    quote: str | None = None,
+) -> str:
     """Build the prompt fed to `claude`. Prepends `[channel: signal]` so the
     personality file can switch to Signal-flavored brevity. If attachments
-    exist, instructs claude to use its Read tool — Read handles vision."""
+    exist, instructs claude to use its Read tool — Read handles vision.
+    `thread_context` (out-of-band pushes) and `quote` (the message being
+    replied to) are surfaced so replies to messages BopBop didn't itself send
+    still have their referent."""
     body = text or ""
+    if quote:
+        body = f'[in-reply-to] "{" ".join(quote.split())}"\n\n' + body
     if attachment_paths:
         paths_block = "\n".join(f"  - {p}" for p in attachment_paths)
         n = len(attachment_paths)
@@ -356,7 +401,7 @@ def _compose_prompt(text: str, attachment_paths: list[Path]) -> str:
             f"them (images are rendered visually):\n{paths_block}\n]"
         )
         body = body + note
-    return "[channel: signal]\n\n" + body
+    return "[channel: signal]\n\n" + _format_thread_context(thread_context or []) + body
 
 
 # ---------------------------------------------------------------------------
@@ -391,15 +436,19 @@ async def inject_message(text: str) -> bool:
 
 
 def _get_or_create_conversation(sender: str) -> str:
+    # Backed by the persistent channel_peers table so a service restart resumes
+    # the same conversation (and warm claude session) instead of forking a new
+    # one. The dict is just an in-process cache.
     cid = _conversations.get(sender)
     if cid is None:
-        cid = db.new_conversation("signal")
+        cid = db.get_or_create_conversation_for_peer("signal", sender)
         _conversations[sender] = cid
     return cid
 
 
 def _reset_conversation(sender: str) -> None:
     _conversations.pop(sender, None)
+    db.reset_peer_conversation("signal", sender)
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +519,7 @@ async def run() -> None:
             sender = msg["sender"]
             text = msg["text"]
             attachments = msg.get("attachments") or []
+            quote = msg.get("quote")
             log.info(
                 "← %s: %s%s",
                 sender[-4:],
@@ -523,10 +573,16 @@ async def run() -> None:
             db.add_message(cid, "user", db_text)
 
             resume_id = db.get_active_claude_session(cid)
+            # Out-of-band messages (notify.sh alerts, etc.) that hit this thread
+            # since the last turn — the resumed session hasn't seen them, so the
+            # user could be replying to one. Surface them in the prompt.
+            pushes = db.get_unseen_pushes(cid)
 
             await _start_typing(cfg, sender)
             try:
-                prompt = _compose_prompt(text, attachment_paths)
+                prompt = _compose_prompt(
+                    text, attachment_paths, thread_context=pushes, quote=quote
+                )
                 reply, new_session_id = await _run_claude(prompt, resume_session_id=resume_id)
                 if new_session_id:
                     db.set_active_claude_session(cid, new_session_id)
