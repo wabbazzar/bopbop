@@ -8,7 +8,7 @@ from pathlib import Path
 DATA_DIR = Path(os.path.expanduser(os.environ.get("BOPBOP_DATA_DIR", "~/.bopbop/data")))
 DB_PATH = os.environ.get("BOPBOP_DB_PATH", str(DATA_DIR / "bopbop.db"))
 
-# A claude session stays "warm" until BOTH expiry conditions fail:
+# An agent session stays "warm" until BOTH expiry conditions fail:
 #   - more than SESSION_IDLE_TIMEOUT seconds since the last user message
 #   - AND more than SESSION_MIN_TURNS user-message turns since the session
 #     was created
@@ -37,7 +37,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_messages_conv
                 ON messages(conversation_id, created_at);
             -- Stable peer -> conversation mapping so a restart doesn't fork a
-            -- new conversation (and drop the warm claude session) for an
+            -- new conversation (and drop the warm agent session) for an
             -- ongoing thread. One row per (channel, peer).
             CREATE TABLE IF NOT EXISTS channel_peers (
                 channel TEXT NOT NULL,
@@ -55,7 +55,8 @@ def init_db() -> None:
         }
         if "source" not in msg_cols:
             c.execute("ALTER TABLE messages ADD COLUMN source TEXT")
-        # Migrate: add claude session columns if upgrading from a pre-V2 DB
+        # Migrate: add session columns if upgrading from a pre-V2 DB. The
+        # historical column names stay in place for a zero-copy upgrade.
         existing_cols = {
             row["name"]
             for row in c.execute("PRAGMA table_info(conversations)").fetchall()
@@ -74,6 +75,8 @@ def init_db() -> None:
                 "ALTER TABLE conversations "
                 "ADD COLUMN claude_session_created_at INTEGER"
             )
+        if "agent_harness" not in existing_cols:
+            c.execute("ALTER TABLE conversations ADD COLUMN agent_harness TEXT")
 
 
 @contextmanager
@@ -137,7 +140,7 @@ def get_or_create_conversation_for_peer(channel: str, peer: str) -> str:
 
 def reset_peer_conversation(channel: str, peer: str) -> None:
     """Forget the peer->conversation mapping so the next message starts a fresh
-    conversation (and thus a fresh claude session). Message history is kept."""
+    conversation (and thus a fresh agent session). Message history is kept."""
     with _conn() as c:
         c.execute(
             "DELETE FROM channel_peers WHERE channel = ? AND peer = ?",
@@ -152,7 +155,7 @@ def get_unseen_pushes(
     fallback_window: int = 3600,
 ) -> list[dict]:
     """Out-of-band messages (source set, i.e. not a normal turn) recorded since
-    the claude session was last active — i.e. messages the resumed session has
+    the agent session was last active — i.e. messages the resumed session has
     NOT seen. These are pushed into the next turn's prompt so a reply to, say, a
     notify.sh alert has the context it's replying to.
 
@@ -195,19 +198,25 @@ def get_unseen_pushes(
     return picked
 
 
-def get_active_claude_session(conversation_id: str) -> str | None:
-    """Return the conversation's claude session id if it's still warm, else
-    None ("spawn fresh, no --resume"). The session is warm if the idle
-    window has not closed OR if we haven't had 20 turns yet — whichever
-    keeps the session alive longer."""
+def get_active_agent_session(
+    conversation_id: str, harness: str = "claude"
+) -> str | None:
+    """Return a warm session only when it belongs to the selected harness.
+
+    Rows created before harness selection existed have ``agent_harness=NULL``;
+    those are Claude sessions and remain resumable when using Claude.
+    """
     with _conn() as c:
         row = c.execute(
             "SELECT claude_session_id, claude_session_active_at, "
-            "       claude_session_created_at "
+            "       claude_session_created_at, agent_harness "
             "FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
         if not row or not row["claude_session_id"]:
+            return None
+        stored_harness = row["agent_harness"] or "claude"
+        if stored_harness != harness:
             return None
         idle = int(time.time()) - (row["claude_session_active_at"] or 0)
         if idle <= SESSION_IDLE_TIMEOUT:
@@ -224,36 +233,58 @@ def get_active_claude_session(conversation_id: str) -> str | None:
     return None
 
 
-def set_active_claude_session(conversation_id: str, session_id: str) -> None:
-    """Persist the claude session_id. If it's the same id we already had,
-    just bump active_at. If it's new (or first time), also stamp
-    created_at — that's the anchor for the 20-turn count."""
+def set_active_agent_session(
+    conversation_id: str, session_id: str, harness: str = "claude"
+) -> None:
+    """Persist an agent session id together with the harness that owns it."""
     now = int(time.time())
     with _conn() as c:
         row = c.execute(
-            "SELECT claude_session_id FROM conversations WHERE id = ?",
+            "SELECT claude_session_id, agent_harness "
+            "FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
-        if row and row["claude_session_id"] == session_id:
+        stored_harness = (row["agent_harness"] or "claude") if row else None
+        if (
+            row
+            and row["claude_session_id"] == session_id
+            and stored_harness == harness
+        ):
             c.execute(
-                "UPDATE conversations SET claude_session_active_at = ? "
+                "UPDATE conversations SET claude_session_active_at = ?, "
+                "agent_harness = ? "
                 "WHERE id = ?",
-                (now, conversation_id),
+                (now, harness, conversation_id),
             )
         else:
             c.execute(
                 "UPDATE conversations SET claude_session_id = ?, "
-                "claude_session_created_at = ?, claude_session_active_at = ? "
+                "claude_session_created_at = ?, claude_session_active_at = ?, "
+                "agent_harness = ? "
                 "WHERE id = ?",
-                (session_id, now, now, conversation_id),
+                (session_id, now, now, harness, conversation_id),
             )
 
 
-def clear_claude_session(conversation_id: str) -> None:
+def clear_agent_session(conversation_id: str) -> None:
     with _conn() as c:
         c.execute(
             "UPDATE conversations SET claude_session_id = NULL, "
             "claude_session_active_at = NULL, "
-            "claude_session_created_at = NULL WHERE id = ?",
+            "claude_session_created_at = NULL, agent_harness = NULL "
+            "WHERE id = ?",
             (conversation_id,),
         )
+
+
+# Backward-compatible names for existing callers and third-party scripts.
+def get_active_claude_session(conversation_id: str) -> str | None:
+    return get_active_agent_session(conversation_id, "claude")
+
+
+def set_active_claude_session(conversation_id: str, session_id: str) -> None:
+    set_active_agent_session(conversation_id, session_id, "claude")
+
+
+def clear_claude_session(conversation_id: str) -> None:
+    clear_agent_session(conversation_id)

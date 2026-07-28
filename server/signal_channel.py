@@ -1,8 +1,8 @@
 """BopBop Signal channel.
 
-Bridges Signal (via signal-cli-rest-api) to a Claude Code subprocess
-spawned per turn in BOPBOP_CONTEXT_DIR — so the agent inherits whatever
-CLAUDE.md, scripts, and MCP tools the context dir provides.
+Bridges Signal (via signal-cli-rest-api) to the configured agent subprocess
+spawned per turn in BOPBOP_CONTEXT_DIR — so the agent inherits the context,
+scripts, skills, and MCP tools that directory provides.
 
 Key behaviors:
   - /v2/send for outbound (produces grey bubbles in Note to Self)
@@ -12,8 +12,7 @@ Key behaviors:
   - Typing indicator refreshed every 7s during processing
   - 8000-char paragraph-aware message splitting
   - /reset slash command (clears stored conversation id for that sender)
-  - Session warmth: turns resume the same claude session while it's warm
-    (see db.get_active_claude_session)
+  - Session warmth: turns resume the same harness-specific session while warm
   - Privacy-respecting content detectors (inbound + outbound): log only
     detector name + short matched phrase, never the message body
 """
@@ -40,7 +39,7 @@ ATTACHMENTS_DIR = (
     / "signal"
 )
 
-from runner import run_turn
+from runner import agent_harness, run_turn
 from detectors import scan_inbound, scan_outbound
 import db
 
@@ -437,7 +436,7 @@ async def inject_message(text: str) -> bool:
 
 def _get_or_create_conversation(sender: str) -> str:
     # Backed by the persistent channel_peers table so a service restart resumes
-    # the same conversation (and warm claude session) instead of forking a new
+    # the same conversation (and warm agent session) instead of forking a new
     # one. The dict is just an in-process cache.
     cid = _conversations.get(sender)
     if cid is None:
@@ -452,16 +451,14 @@ def _reset_conversation(sender: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Run one turn through claude CLI subprocess
+# Run one turn through the configured agent CLI subprocess
 # ---------------------------------------------------------------------------
 
 
-async def _run_claude(
+async def _run_agent(
     text: str, resume_session_id: str | None = None
 ) -> tuple[str, str | None]:
-    """Returns (reply_text, claude_session_id). The session id is captured
-    from claude's system/init event so it can be persisted for --resume on
-    the next turn, giving multi-message context coherence."""
+    """Return reply text and the harness session id for warm resumption."""
     parts: list[str] = []
     new_session_id: str | None = None
     async for ev in run_turn(text, resume_session_id=resume_session_id):
@@ -471,7 +468,7 @@ async def _run_claude(
         elif kind == "text":
             parts.append(ev.get("delta", ""))
         elif kind == "error":
-            log.warning("claude error: %s", ev.get("message", ""))
+            log.warning("agent error: %s", ev.get("message", ""))
     return ("".join(parts).strip() or "(no response)", new_session_id)
 
 
@@ -550,14 +547,14 @@ async def run() -> None:
             if text.strip().lower() == "/reset":
                 old_cid = _conversations.get(sender)
                 if old_cid:
-                    db.clear_claude_session(old_cid)
+                    db.clear_agent_session(old_cid)
                 _reset_conversation(sender)
                 await _signal_send(cfg, sender, "Session reset.")
                 log_event("bopbop-signal", "session.reset", source="user", actor=actor)
                 continue
 
-            # Download any attachments before kicking off claude — claude needs
-            # local file paths to feed its vision-capable Read tool.
+            # Download attachments before starting the agent so their local
+            # paths can be included in the prompt.
             attachment_paths: list[Path] = []
             for att in attachments:
                 p = await _download_attachment(cfg, att)
@@ -572,7 +569,8 @@ async def run() -> None:
                 ) + "]"
             db.add_message(cid, "user", db_text)
 
-            resume_id = db.get_active_claude_session(cid)
+            harness = agent_harness()
+            resume_id = db.get_active_agent_session(cid, harness)
             # Out-of-band messages (notify.sh alerts, etc.) that hit this thread
             # since the last turn — the resumed session hasn't seen them, so the
             # user could be replying to one. Surface them in the prompt.
@@ -583,9 +581,11 @@ async def run() -> None:
                 prompt = _compose_prompt(
                     text, attachment_paths, thread_context=pushes, quote=quote
                 )
-                reply, new_session_id = await _run_claude(prompt, resume_session_id=resume_id)
+                reply, new_session_id = await _run_agent(
+                    prompt, resume_session_id=resume_id
+                )
                 if new_session_id:
-                    db.set_active_claude_session(cid, new_session_id)
+                    db.set_active_agent_session(cid, new_session_id, harness)
                 await _stop_typing()
                 for detector, reason in scan_outbound(reply):
                     log_event(

@@ -1,6 +1,6 @@
 """Content detectors for BopBop.
 
-Runs patterns against inbound message bodies and Claude's outbound
+Runs patterns against inbound message bodies and the agent's outbound
 responses. Returns a list of (detector, detail) hits. Never returns
 or logs the body itself — we're deliberately preserving the privacy
 of Note-to-Self traffic. A hit produces a `message.flagged` event
@@ -51,7 +51,7 @@ def scan_inbound(text: str) -> list[tuple[str, str]]:
     return hits
 
 
-# Outbound detectors (secret shapes in Claude's replies) ----------------------
+# Outbound detectors (secret shapes in agent replies) -------------------------
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),

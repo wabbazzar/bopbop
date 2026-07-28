@@ -10,7 +10,7 @@
 #   --no-signal     skip the signal-cli container step
 #   --no-start      install but don't start the service
 #
-# Requires: python3, curl, systemd (user instance), Claude Code CLI.
+# Requires: python3, curl, systemd (user instance), and the selected agent CLI.
 # Docker is only needed for the signal-cli container step.
 
 set -euo pipefail
@@ -33,8 +33,19 @@ step "Preflight"
 for dep in python3 curl systemctl; do
     command -v "$dep" >/dev/null || { echo "missing dependency: $dep" >&2; exit 1; }
 done
-if ! command -v claude >/dev/null; then
-    echo "WARNING: 'claude' CLI not on PATH. Install Claude Code before starting the service." >&2
+selected_harness="claude"
+if [[ -f "$BOPBOP_HOME/env" ]]; then
+    configured_harness=$(grep -E '^BOPBOP_AGENT_HARNESS=' "$BOPBOP_HOME/env" \
+        | tail -1 | cut -d= -f2-)
+    [[ -n "$configured_harness" ]] && selected_harness="$configured_harness"
+fi
+case "$selected_harness" in
+    claude) selected_bin="claude" ;;
+    codex) selected_bin="codex" ;;
+    *) echo "unsupported BOPBOP_AGENT_HARNESS: $selected_harness" >&2; exit 1 ;;
+esac
+if ! command -v "$selected_bin" >/dev/null; then
+    echo "WARNING: '$selected_bin' CLI not on PATH for harness '$selected_harness'." >&2
 fi
 
 step "Scaffold ~/.bopbop"
@@ -82,7 +93,7 @@ step "systemd user service"
 mkdir -p "$UNIT_DIR"
 cat > "$UNIT_DIR/bopbop.service" <<EOF
 [Unit]
-Description=BopBop — personal Claude agent (Signal + API)
+Description=BopBop — personal coding agent (Signal + API)
 After=network-online.target
 Wants=network-online.target
 

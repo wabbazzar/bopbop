@@ -42,6 +42,31 @@ def test_add_message_records_source(tmp_db):
     assert rows["typed"] is None
 
 
+def test_sessions_are_never_resumed_across_harnesses(tmp_db):
+    cid = db.new_conversation("signal")
+    db.set_active_agent_session(cid, "claude-session", "claude")
+    assert db.get_active_agent_session(cid, "claude") == "claude-session"
+    assert db.get_active_agent_session(cid, "codex") is None
+
+    db.set_active_agent_session(cid, "codex-thread", "codex")
+    assert db.get_active_agent_session(cid, "codex") == "codex-thread"
+    assert db.get_active_agent_session(cid, "claude") is None
+
+
+def test_pre_harness_session_rows_remain_claude_compatible(tmp_db):
+    cid = db.new_conversation("signal")
+    now = int(time.time())
+    with db._conn() as c:
+        c.execute(
+            "UPDATE conversations SET claude_session_id = ?, "
+            "claude_session_active_at = ?, claude_session_created_at = ? "
+            "WHERE id = ?",
+            ("legacy-session", now, now, cid),
+        )
+    assert db.get_active_agent_session(cid, "claude") == "legacy-session"
+    assert db.get_active_agent_session(cid, "codex") is None
+
+
 # --------------------------------------------------------------------------
 # db.get_unseen_pushes: windowing / bounds / ordering
 # --------------------------------------------------------------------------

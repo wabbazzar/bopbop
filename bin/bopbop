@@ -48,9 +48,14 @@ cmd_init() {
 
     if [[ -d "$BOPBOP_HOME/context" && $force -eq 0 ]]; then
         note "context dir already exists: $BOPBOP_HOME/context (use --force to overwrite templates)"
+        if [[ ! -e "$BOPBOP_HOME/context/AGENTS.md" && ! -L "$BOPBOP_HOME/context/AGENTS.md" ]]; then
+            cp "$REPO_DIR/templates/context/AGENTS.md" "$BOPBOP_HOME/context/AGENTS.md"
+            note "added Codex AGENTS.md bridge to existing context"
+        fi
     else
         mkdir -p "$BOPBOP_HOME/context/scripts"
         cp "$REPO_DIR/templates/context/CLAUDE.md" "$BOPBOP_HOME/context/CLAUDE.md"
+        cp "$REPO_DIR/templates/context/AGENTS.md" "$BOPBOP_HOME/context/AGENTS.md"
         cp "$REPO_DIR/templates/context/personality.md" "$BOPBOP_HOME/context/personality.md"
         note "scaffolded context dir: $BOPBOP_HOME/context"
     fi
@@ -106,9 +111,17 @@ cmd_doctor() {
     local ctx="${_ctx_env:-${BOPBOP_CONTEXT_DIR:-$BOPBOP_HOME/context}}"
     ctx="${ctx/#\~/$HOME}"
     if [[ -f "$ctx/CLAUDE.md" ]]; then
-        pass "context dir has CLAUDE.md ($ctx)"
+        pass "context dir has shared CLAUDE.md ($ctx)"
     else
         fail "context dir missing CLAUDE.md ($ctx) — run: bopbop init"
+    fi
+    local harness="${BOPBOP_AGENT_HARNESS:-claude}"
+    if [[ "$harness" == "codex" ]]; then
+        if [[ -f "$ctx/AGENTS.md" ]]; then
+            pass "Codex context has AGENTS.md ($ctx)"
+        else
+            fail "Codex context missing AGENTS.md ($ctx) — copy templates/context/AGENTS.md or add an equivalent bridge"
+        fi
     fi
 
     # installed packs + their required env
@@ -132,12 +145,20 @@ cmd_doctor() {
         fi
     done
 
-    # claude CLI
-    local claude_bin="${BOPBOP_CLAUDE_BIN:-claude}"
-    if command -v "$claude_bin" >/dev/null; then
-        pass "claude CLI found ($($claude_bin --version 2>/dev/null | head -1))"
-    else
-        fail "claude CLI not found ('$claude_bin') — install Claude Code first"
+    # selected agent CLI
+    local agent_bin
+    case "$harness" in
+        claude) agent_bin="${BOPBOP_CLAUDE_BIN:-claude}" ;;
+        codex)  agent_bin="${BOPBOP_CODEX_BIN:-codex}" ;;
+        *)
+            fail "unsupported BOPBOP_AGENT_HARNESS '$harness' (expected claude or codex)"
+            agent_bin=""
+            ;;
+    esac
+    if [[ -n "$agent_bin" ]] && command -v "$agent_bin" >/dev/null; then
+        pass "$harness CLI found ($($agent_bin --version 2>/dev/null | head -1))"
+    elif [[ -n "$agent_bin" ]]; then
+        fail "$harness CLI not found ('$agent_bin')"
     fi
 
     # venv
@@ -176,7 +197,7 @@ cmd_doctor() {
 
     echo
     if (( FAILURES == 0 )); then
-        note "All checks passed. Text yourself on Signal (Note to Self) to talk to your agent."
+        note "All checks passed. Text yourself on Signal (Note to Self) to talk to your $harness agent."
     else
         note "$FAILURES check(s) failed."
         exit 1

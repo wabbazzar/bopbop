@@ -1,35 +1,35 @@
 # BopBop
 
-**Your machine's Claude, reachable from your pocket.**
+**Your machine's coding agent, reachable from your pocket.**
 
-BopBop turns the [Claude Code](https://claude.com/claude-code) install on
-your computer into a personal always-on agent you can text over Signal.
-Every message you send (Note to Self) spawns a Claude Code turn on your
-machine — with whatever context, scripts, and tools you've given it.
+BopBop turns a Claude Code or Codex CLI install on your computer into a
+personal always-on agent you can text over Signal. Every message you send
+(Note to Self) spawns an agent turn on your machine — with whatever context,
+scripts, and tools you've given it.
 
 ```
  phone (Signal)  ──►  signal-cli-rest-api  ──►  bopbop server  ──►  claude -p
-                                                      │           (your context
-                                                      ▼            dir = its
-                                              sqlite history       brain)
+                                                      │               or
+                                                      ▼           codex exec
+                                              sqlite history
 ```
 
 ## The context-dir idea
 
 BopBop itself is a thin gateway (~1.2k lines of Python). The personality
 and capabilities live in a **context directory** (`~/.bopbop/context`) —
-a normal Claude Code working dir with a `CLAUDE.md`, a `personality.md`,
-and any scripts you add. Teaching your agent a new trick is: drop a
-script in the context dir, document it in `CLAUDE.md`, done. No server
-code changes.
+a normal agent working dir with `AGENTS.md`/`CLAUDE.md`, a personality file,
+and any scripts you add. Teaching your agent a new trick is: drop a script in
+the context dir, document it in `CLAUDE.md`, done. Codex turns explicitly load
+that shared context in addition to native `AGENTS.md`.
 
 This is the same pattern you'd use for a human teammate: don't change the
 messenger, change the onboarding doc.
 
 ## Install
 
-Prereqs: Linux with systemd (user instance), Python 3.11+, [Claude Code](https://claude.com/claude-code)
-installed and authenticated, Docker (for the Signal bridge), a Signal
+Prereqs: Linux with systemd (user instance), Python 3.11+, Claude Code or Codex
+CLI installed and authenticated, Docker (for the Signal bridge), and a Signal
 account on your phone.
 
 ```bash
@@ -101,8 +101,10 @@ installed pack's `required_env`. Packs may live at the repo root or in a
 
 ## Security model — read this
 
-BopBop runs Claude with `--dangerously-skip-permissions`: the agent has
-**full access to your machine** — that's the point, and the risk.
+BopBop runs the selected harness without interactive approvals (Claude:
+`--dangerously-skip-permissions`; Codex:
+`--dangerously-bypass-approvals-and-sandbox`). The agent has **full access to
+your machine** — that's the point, and the risk.
 
 - **Sender allowlist is mandatory.** The Signal channel refuses to start
   without `SIGNAL_ALLOWED_USERS`; inbound messages from senders not on it
@@ -130,10 +132,13 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 
 | var | default | meaning |
 |---|---|---|
-| `BOPBOP_CONTEXT_DIR` | `~/.bopbop/context` | the agent's brain (Claude Code working dir) |
+| `BOPBOP_CONTEXT_DIR` | `~/.bopbop/context` | the agent's working directory and shared context |
 | `BOPBOP_DATA_DIR` | `~/.bopbop/data` | sqlite db + downloaded attachments |
+| `BOPBOP_AGENT_HARNESS` | `claude` | agent CLI: `claude` or `codex` |
 | `BOPBOP_CLAUDE_BIN` | `claude` | Claude Code binary |
 | `BOPBOP_CLAUDE_MODEL` | `sonnet` | model per turn |
+| `BOPBOP_CODEX_BIN` | `codex` | Codex CLI binary |
+| `BOPBOP_CODEX_MODEL` | unset | optional Codex model override; unset uses Codex config |
 | `BOPBOP_SIGNAL_ENABLED` | — | `1` to enable the Signal channel |
 | `SIGNAL_HTTP_URL` | `http://127.0.0.1:8080` | signal-cli-rest-api |
 | `SIGNAL_ACCOUNT` | — | your number, E.164 |
@@ -142,11 +147,12 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 
 ## Niceties
 
-- **Session warmth**: consecutive messages resume the same Claude session
-  (1h idle window or 20 turns, whichever lasts longer), so "and what
-  about the second one?" works. `/reset` starts fresh.
-- **Attachments**: send a photo; the agent reads it with Claude's
-  vision-capable Read tool.
+- **Session warmth**: consecutive messages resume the same harness-specific
+  session (1h idle window or 20 turns, whichever lasts longer), so "and what
+  about the second one?" works. Switching harnesses starts fresh; `/reset`
+  also starts fresh.
+- **Attachments**: send a photo; the local attachment path is included for the
+  selected agent to inspect.
 - **Typing indicator** while the agent works; long replies are split at
   paragraph boundaries.
 - **Test without a phone**: `curl -X POST http://127.0.0.1:8090/api/test/signal-inject -H 'Content-Type: application/json' -d '{"message":"hi"}'`

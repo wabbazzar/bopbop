@@ -19,11 +19,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Syntax + import check
+      - name: Syntax, import, and tests
         run: |
           python -m compileall server/
-          pip install -q -r server/requirements.txt
-          cd server && python -c "import main"
+          pip install -q -r server/requirements-dev.txt
+          cd server
+          python -c "import main"
+          pytest -q
 
   shell:
     runs-on: ubuntu-latest
@@ -31,4 +33,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: bash -n all scripts
         run: |
-          bash -n install.sh bin/bopbop scripts/leak-check.sh .githooks/pre-commit
+          bash -n install.sh bin/bopbop bin/claude-note.sh \
+            bin/claude-sessions.sh scripts/leak-check.sh .githooks/pre-commit

@@ -10,14 +10,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import db
-from runner import run_turn
+from runner import agent_harness, agent_model, run_turn
 
 # Auth model: BopBop binds to 127.0.0.1 and is designed to sit behind a
 # private network boundary you trust — a VPN/tailnet (e.g. Tailscale Serve)
 # or an authenticating reverse proxy. If you expose it any wider, set
 # BOPBOP_REQUIRE_BEARER=1 (and BOPBOP_BEARER_TOKEN) to gate /api/chat.
 # NEVER expose it to the public internet unauthenticated: the agent runs
-# `claude --dangerously-skip-permissions` with full access to this machine.
+# the configured agent CLI with full access to this machine.
 REQUIRE_BEARER = os.environ.get("BOPBOP_REQUIRE_BEARER", "0") == "1"
 BEARER = os.environ.get("BOPBOP_BEARER_TOKEN")
 if REQUIRE_BEARER and not BEARER:
@@ -79,7 +79,8 @@ async def chat(req: ChatReq, authorization: str | None = Header(None)):
     cid = req.conversation_id or db.new_conversation("pwa")
     db.add_message(cid, "user", req.message)
     prompt = "[channel: pwa]\n\n" + req.message
-    resume_id = db.get_active_claude_session(cid)
+    harness = agent_harness()
+    resume_id = db.get_active_agent_session(cid, harness)
 
     async def stream():
         yield json.dumps({"kind": "meta", "conversation_id": cid}) + "\n"
@@ -96,7 +97,7 @@ async def chat(req: ChatReq, authorization: str | None = Header(None)):
             yield json.dumps(ev) + "\n"
 
         if new_session_id:
-            db.set_active_claude_session(cid, new_session_id)
+            db.set_active_agent_session(cid, new_session_id, harness)
         if full_text:
             db.add_message(cid, "assistant", "".join(full_text))
 
@@ -149,10 +150,12 @@ async def signal_inject(req: InjectReq, request: Request):
 
 @app.get("/api/health")
 def health():
+    harness = agent_harness()
     return {
         "ok": True,
         "context_dir": os.environ.get("BOPBOP_CONTEXT_DIR"),
-        "model": os.environ.get("BOPBOP_CLAUDE_MODEL", "sonnet"),
+        "agent_harness": harness,
+        "model": agent_model(harness) or "default",
         "signal_enabled": os.environ.get("BOPBOP_SIGNAL_ENABLED") == "1",
         "signal_account": os.environ.get("SIGNAL_ACCOUNT"),
         "require_bearer": REQUIRE_BEARER,
