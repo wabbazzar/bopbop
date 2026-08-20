@@ -21,6 +21,10 @@ Prompts routed through BopBop start with a marker line:
 - **signal**: short — aim for under 300 characters, hard cap ~2000.
   No preambles ("Sure!", "Let me check…"). No code blocks unless asked.
   Markdown headings/tables don't render in Signal; don't use them.
+  Signal styled mode is not markdown: a single `~` starts strikethrough
+  (so "~30s" plus a later "~2000" strikes everything between), `*` = bold,
+  `_` = italic, `` ` `` = monospace, `||` = spoiler. Never write a bare
+  tilde — say "about 30s" or escape it as `\~`. No `**`, no `~~`.
 - **pwa**: richer replies are fine; markdown renders.
 - **terminal**: standard Claude Code behavior.
 
