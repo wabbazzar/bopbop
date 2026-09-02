@@ -20,6 +20,7 @@ Key behaviors:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -205,7 +206,78 @@ async def _stop_typing() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _detect_mode(cfg: SignalConfig) -> str:
+    """Ask the bridge which execution MODE it runs in.
+
+    In json-rpc modes signal-cli keeps a persistent daemon and /v1/receive is
+    served as a WebSocket push stream; in normal/native it is a plain HTTP GET
+    that spawns a fresh JVM per call. We pick the transport to match instead of
+    hard-coding one, so flipping MODE on the container needs no code change.
+    """
+    assert _http is not None
+    try:
+        r = await _http.get(f"{cfg.signal_url}/v1/about", timeout=30.0)
+        if r.is_success:
+            return str(r.json().get("mode") or "normal")
+    except Exception as e:
+        log.warning("Could not detect signal-cli mode (%s); assuming normal", e)
+    return "normal"
+
+
+async def _receive_ws(cfg: SignalConfig, queue: asyncio.Queue) -> None:
+    """json-rpc mode: receive is a WebSocket the bridge pushes envelopes down.
+
+    Replaces the 1.5s HTTP poll, which in MODE=normal cold-started a signal-cli
+    JVM per request (~50% of a core burned continuously, bursts over 300%).
+    """
+    import websockets
+
+    ws_url = cfg.signal_url.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = f"{ws_url}/v1/receive/{cfg.signal_account}"
+    backoff = 1.0
+    while True:
+        try:
+            async with websockets.connect(
+                ws_url, ping_interval=30, ping_timeout=20, max_size=None
+            ) as ws:
+                log.info("Signal receive websocket connected (%s)", ws_url)
+                backoff = 1.0
+                async for raw in ws:
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        continue
+                    envelopes = payload if isinstance(payload, list) else [payload]
+                    for env in envelopes:
+                        msg = _extract_message(cfg, env)
+                        if msg:
+                            await queue.put(msg)
+                log.warning("Signal receive websocket closed cleanly; reconnecting")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning(
+                "Signal receive websocket dropped (%s); retrying in %.0fs", e, backoff
+            )
+        try:
+            await asyncio.sleep(backoff)
+        except asyncio.CancelledError:
+            break
+        backoff = min(backoff * 2, 30.0)
+
+
 async def _poll_messages(cfg: SignalConfig, queue: asyncio.Queue) -> None:
+    """Dispatch to the receive transport that matches the bridge's MODE."""
+    mode = await _detect_mode(cfg)
+    if mode.startswith("json-rpc"):
+        log.info("signal-cli mode=%s — using websocket receive", mode)
+        await _receive_ws(cfg, queue)
+    else:
+        log.info("signal-cli mode=%s — using HTTP poll receive", mode)
+        await _receive_http(cfg, queue)
+
+
+async def _receive_http(cfg: SignalConfig, queue: asyncio.Queue) -> None:
     assert _http is not None
     url = f"{cfg.signal_url}/v1/receive/{cfg.signal_account}"
     consecutive_errors = 0
