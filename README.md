@@ -61,6 +61,15 @@ bin/bopbop run       run the server in the foreground (dev)
 bin/bopbop pack      install / list / remove context packs
 ```
 
+### Experimental local terminal agent
+
+`python3 bin/bopbop-local.py` opens a direct Ollama agent in the current
+directory using `gpt-oss:20b`. It does not use Claude or Codex and does not
+change the Signal service. It shows tool calls, tool results, per-call token
+counts, model throughput, and response times. Pass a prompt as arguments for
+one turn, or use `--workspace PATH` to choose another working directory.
+`run_command` runs with your user permissions; use a workspace you trust.
+
 ## Context packs
 
 A **pack** is an installable capability bundle for your agent — a git repo
