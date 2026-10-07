@@ -124,7 +124,8 @@ replayed conversation history is counted again on each call. `stream chunks`
 and `thinking chars` are activity indicators, not token counts.
 
 Color is automatic in a terminal. Use `--color never` or `NO_COLOR=1` for plain
-text. Startup shows the original pearly BopBop character with a brief arm wave.
+text. Startup shows the original pearly BopBop character blinking, smiling,
+and winking in a short facial greeting.
 Use `bopbop local --banner static` for a still portrait or `--banner off` for
 a compact text header. The portrait adapts to terminal width; redirected
 output and server JSONL use their normal text formats. Art is bundled with

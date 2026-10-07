@@ -613,7 +613,7 @@ def main():
     parser.add_argument("--context", type=int, default=int(os.environ.get("BOPBOP_OLLAMA_CONTEXT", "16384")))
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("--banner", choices=("auto", "static", "off"), default="auto",
-                        help="startup portrait: brief wave, still image, or compact text")
+                        help="startup portrait: animated face, still image, or compact text")
     parser.add_argument("--jsonl", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--session-id", help=argparse.SUPPRESS)
     args = parser.parse_args()

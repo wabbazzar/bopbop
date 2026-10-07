@@ -2,7 +2,16 @@
 
 The portrait uses the original BopBop character artwork: its silhouette,
 face, and pearly colors. `pearl.svg` embeds the source image with a clip
-around the character. Arm poses are layered behind that same image.
+around the character. Eye and mouth poses reuse the original laughing and
+winking emotes in `expressions/`, aligned over the face with feathered masks.
+The body, highlights, and cheeks stay in place.
+
+The greeting follows a quick blink, a held cheerful smile, and a wink,
+then returns to the original expression. References:
+
+- [Anime smile and wink animation](https://tenor.com/view/anime-cute-smile-wink-gif-12543366)
+- [Live2D automatic eye blinking](https://docs.live2d.com/en/cubism-sdk-manual/autoeyeblink/)
+- [Live2D expression parameters](https://docs.live2d.com/en/cubism-editor-manual/standard-parameter-list/)
 
 The CLI reads the checked-in ANSI frames using only the Python standard
 library. No image converters or font packages are needed at runtime.

@@ -9,7 +9,11 @@ import time
 
 ART_DIR = pathlib.Path(__file__).resolve().parent.parent / "assets" / "cli"
 SGR = re.compile(r"\x1b\[[0-9;]*m")
-WAVE = ("rest", "low", "left", "right", "left", "right", "low", "rest")
+# Brief closures and longer expression holds follow anime wink/blink references.
+# Key poses reuse BopBop's original laughing and winking emotes.
+GREETING = (("rest", 0.12), ("blink", 0.075), ("rest", 0.125),
+            ("grin", 0.10), ("beam", 0.25), ("grin", 0.09),
+            ("wink", 0.20), ("rest", 0.0))
 
 
 def _width(line: str) -> int:
@@ -29,7 +33,7 @@ def _layout(model: str, context: int, columns: int, rows: int):
     size = "wide" if columns >= 80 and rows >= 24 else "compact"
     frames = {
         pose: (ART_DIR / f"pearl-{size}-{pose}.ansi").read_text().splitlines()
-        for pose in set(WAVE)
+        for pose in {pose for pose, _ in GREETING}
     }
     portrait_width = max(_width(line) for line in frames["rest"])
     side_width = columns - portrait_width - 5
@@ -62,7 +66,7 @@ def _layout(model: str, context: int, columns: int, rows: int):
 
 def show_banner(model: str, context: int, *, color: bool,
                 mode: str = "auto", interactive: bool = True) -> bool:
-    """Print a static portrait or a short wave; return False for plain fallback."""
+    """Print a static portrait or facial greeting; False means plain fallback."""
     if mode == "off" or not color or (mode == "auto" and not sys.stdout.isatty()):
         return False
     terminal_size = shutil.get_terminal_size((80, 24))
@@ -81,7 +85,7 @@ def show_banner(model: str, context: int, *, color: bool,
     height = 0
     try:
         sys.stdout.write("\x1b[?25l")
-        for index, pose in enumerate(WAVE):
+        for pose, hold_seconds in GREETING:
             # A resize can make a previous frame wrap. Stop before moving the
             # cursor through lines whose positions are no longer predictable.
             if shutil.get_terminal_size((80, 24)) != terminal_size:
@@ -93,8 +97,8 @@ def show_banner(model: str, context: int, *, color: bool,
                 sys.stdout.write("\r\x1b[2K" + line + "\n")
             height = len(lines)
             sys.stdout.flush()
-            if index < len(WAVE) - 1:
-                time.sleep(0.09)
+            if hold_seconds:
+                time.sleep(hold_seconds)
     except KeyboardInterrupt:
         pass
     finally:

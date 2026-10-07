@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Rebuild the checked-in terminal portraits with Chafa; runtime uses ANSI only."""
 import argparse
+import base64
 import pathlib
 import re
 import subprocess
@@ -8,29 +9,39 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ART = ROOT / "assets" / "cli"
-POSES = {
-    "rest": None,
-    "low": ((162, 505), (930, 505)),
-    "left": ((168, 383), (922, 430)),
-    "right": ((168, 430), (922, 383)),
-}
+POSES = ("rest", "blink", "grin", "beam", "wink")
 
 
-def arms(pose):
-    if pose is None:
-        return ""
-    (lx, ly), (rx, ry) = pose
+def patch(name, region, cx, cy, rx, ry, scale=2.9, tx=79, ty=35):
+    """Align and feather an existing expression over the original face only."""
+    image = base64.b64encode((ART / "expressions" / f"{name}.png").read_bytes()).decode()
     return f'''<defs>
-      <linearGradient id="arm" x1="0" x2="1">
-        <stop stop-color="#b5dce6"/><stop offset=".5" stop-color="#e4daed"/>
-        <stop offset="1" stop-color="#b2b9dc"/>
-      </linearGradient>
-    </defs><g fill="none" stroke="url(#arm)" stroke-width="22" stroke-linecap="round">
-      <path d="M 234 640 Q 154 592 162 522 L {lx} {ly}"/>
-      <path d="M 867 640 Q 934 592 930 522 L {rx} {ry}"/>
-      <path d="M {lx} {ly} l -4 -24 M {lx} {ly} l 20 -19"/>
-      <path d="M {rx} {ry} l 4 -24 M {rx} {ry} l -20 -19"/>
+      <radialGradient id="fade-{region}">
+        <stop offset=".8" stop-color="white"/><stop offset="1" stop-color="black"/>
+      </radialGradient>
+      <mask id="mask-{region}" maskUnits="userSpaceOnUse" x="150" y="230" width="790" height="730">
+        <ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" fill="url(#fade-{region})"/>
+      </mask>
+    </defs><g mask="url(#mask-{region})">
+      <image width="320" height="320" transform="translate({tx} {ty}) scale({scale})"
+        xlink:href="data:image/png;base64,{image}"/>
     </g>'''
+
+
+def expression(pose):
+    if pose == "rest":
+        return ""
+    if pose == "wink":
+        return patch("winking", "right-eye", 653, 501, 54, 46)
+    layers = patch("laughing", "left-eye", 433, 501, 54, 46)
+    layers += patch("laughing", "right-eye", 653, 501, 54, 46)
+    if pose in {"grin", "beam"}:
+        # The mouth grows from the same laughing key pose; the original body,
+        # highlights, and cheeks stay in place throughout the greeting.
+        scale = 2.2 if pose == "grin" else 2.9
+        layers += patch("laughing", "mouth", 548, 576, 95, 75,
+                        scale=scale, tx=548 - 161 * scale, ty=576 - 188 * scale)
+    return layers
 
 
 def main():
@@ -39,10 +50,9 @@ def main():
     args = parser.parse_args()
     source = (ART / "pearl.svg").read_text()
     with tempfile.TemporaryDirectory(prefix="bopbop-art-") as scratch:
-        for pose, coordinates in POSES.items():
+        for pose in POSES:
             svg = pathlib.Path(scratch) / f"{pose}.svg"
-            # Place arms behind the unmodified portrait.
-            svg.write_text(source.replace("<image", arms(coordinates) + "<image", 1))
+            svg.write_text(source.replace("</svg>", expression(pose) + "</svg>"))
             for size, dimensions in (("wide", "34x16"), ("compact", "22x10")):
                 result = subprocess.check_output([
                     args.chafa, "--format", "symbols", "--colors", "full",
