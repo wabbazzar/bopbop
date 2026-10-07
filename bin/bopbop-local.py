@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shlex
 import subprocess
@@ -16,6 +17,46 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass
+
+
+class Display:
+    """Small ANSI presentation layer; plain text when color is unavailable."""
+
+    def __init__(self, color: bool):
+        self.color = color
+
+    def ink(self, value: str, style: str) -> str:
+        if not self.color:
+            return str(value)
+        codes = {
+            "brand": "1;36", "model": "36", "tool": "1;33",
+            "ok": "1;32", "error": "1;31", "muted": "90", "strong": "1",
+        }
+        return f"\x1b[{codes[style]}m{value}\x1b[0m"
+
+    def event(self, label: str, detail: str = "", style: str = "muted") -> None:
+        print(f"  {self.ink(label, style)}{('  ' + detail) if detail else ''}",
+              file=sys.stderr, flush=True)
+
+    def header(self, model: str, context: int, workspace: pathlib.Path) -> None:
+        print(self.ink("● bopbop", "brand") + self.ink("  LOCAL AGENT", "muted"))
+        print(f"  {self.ink(model, 'strong')}  {self.ink('·', 'muted')}"
+              f"  {context:,} token context")
+        print(f"  {self.ink('cwd', 'muted')}  {workspace}")
+        print(self.ink("  ───────────────────────────────────────────────", "muted"))
+        print(self.ink("  /exit to quit  ·  tools run as your user", "muted"), flush=True)
+
+    def answer(self, value: str) -> None:
+        print("\n" + self.ink("◆ answer", "ok"))
+        print(value or self.ink("(empty response)", "error"), flush=True)
+
+
+def use_color(option: str) -> bool:
+    if option == "never" or "NO_COLOR" in os.environ:
+        return False
+    if option == "always":
+        return True
+    return sys.stdout.isatty() and sys.stderr.isatty() and os.environ.get("TERM") != "dumb"
 
 
 def tool(name: str, description: str, properties: dict, required: list[str]):
@@ -86,22 +127,26 @@ def _seconds(value: int | None) -> float:
     return (value or 0) / 1_000_000_000
 
 
-def _activity(stop: threading.Event, started: float, progress: dict, tty: bool) -> None:
+def _activity(stop: threading.Event, started: float, progress: dict,
+              tty: bool, display: Display) -> None:
     if not tty:
         return
     frames = "|/-\\"
     frame = 0
     while not stop.wait(0.2):
         elapsed = time.monotonic() - started
-        line = (f"\r  {frames[frame % len(frames)]} model {elapsed:5.1f}s"
-                f" · {progress['chunks']} stream chunks"
-                f" · {progress['thinking']} thinking chars")
+        line = (f"\r  {display.ink(frames[frame % len(frames)], 'model')}"
+                f" {elapsed:5.1f}s"
+                f" {display.ink('·', 'muted')} {progress['chunks']}"
+                f" {'chunk' if progress['chunks'] == 1 else 'chunks'}"
+                f" {display.ink('·', 'muted')} {progress['thinking']} thinking chars")
         print(line, end="", file=sys.stderr, flush=True)
         frame += 1
     print("\r\033[K", end="", file=sys.stderr, flush=True)
 
 
-def chat(model: str, messages: list[dict], context: int, step: int) -> tuple[dict, ModelStats]:
+def chat(model: str, messages: list[dict], context: int, step: int,
+         display: Display) -> tuple[dict, ModelStats]:
     payload = {"model": model, "messages": messages, "tools": TOOLS,
                "stream": True, "think": False,
                "options": {"num_ctx": context, "temperature": 0}, "keep_alive": "10m"}
@@ -111,8 +156,8 @@ def chat(model: str, messages: list[dict], context: int, step: int) -> tuple[dic
     progress = {"chunks": 0, "thinking": 0}
     stop = threading.Event()
     ticker = threading.Thread(target=_activity,
-        args=(stop, started, progress, sys.stderr.isatty()), daemon=True)
-    print(f"  model step {step} · waiting for {model}", file=sys.stderr, flush=True)
+        args=(stop, started, progress, sys.stderr.isatty(), display), daemon=True)
+    display.event(f"◇ model {step:02d}", f"{model} · generating", "model")
     ticker.start()
     content, thinking, calls = [], [], []
     first_chunk = None
@@ -157,17 +202,17 @@ def chat(model: str, messages: list[dict], context: int, step: int) -> tuple[dic
     return message, stats
 
 
-def show_stats(stats: ModelStats, context: int) -> None:
+def show_stats(stats: ModelStats, context: int, display: Display) -> None:
     speed = stats.output_tokens / stats.generation_s if stats.generation_s else 0
     first = f"{stats.first_chunk_s:.1f}s" if stats.first_chunk_s is not None else "?"
-    print((f"  tokens  in {stats.prompt_tokens:,}/{context:,}"
-           f" (cached {stats.cached_tokens:,}) · out {stats.output_tokens:,}"
-           f" · {speed:.1f} tok/s"), file=sys.stderr)
-    print((f"  timing  {stats.wall_s:.1f}s wall · first chunk {first}"
-           f" · load {stats.load_s:.1f}s · prompt {stats.prompt_s:.1f}s"
-           f" · generate {stats.generation_s:.1f}s"), file=sys.stderr, flush=True)
-    print((f"  stream  {stats.stream_chunks} chunks"
-           f" · {stats.thinking_chars:,} thinking chars"), file=sys.stderr, flush=True)
+    display.event("  tokens", (f"{stats.prompt_tokens:,}/{context:,} in"
+        f" · {stats.output_tokens:,} out · {speed:.1f} tok/s"
+        f" · {stats.cached_tokens:,} cached"))
+    display.event("  timing", (f"{stats.wall_s:.1f}s wall · first {first}"
+        f" · load {stats.load_s:.1f}s · prompt {stats.prompt_s:.1f}s"
+        f" · generate {stats.generation_s:.1f}s"))
+    display.event("  stream", (f"{stats.stream_chunks} chunks"
+        f" · {stats.thinking_chars:,} thinking chars"))
 
 
 def call_label(name: str, args: dict) -> str:
@@ -200,32 +245,35 @@ def system_prompt(workspace: pathlib.Path) -> str:
     return "\n".join(parts)
 
 
-def turn(model: str, messages: list[dict], workspace: pathlib.Path, context: int) -> str:
+def turn(model: str, messages: list[dict], workspace: pathlib.Path,
+         context: int, display: Display) -> str:
     turn_started = time.monotonic()
     total_in = total_out = tool_count = 0
     for step in range(12):
-        message, stats = chat(model, messages, context, step + 1)
-        show_stats(stats, context)
+        message, stats = chat(model, messages, context, step + 1, display)
+        show_stats(stats, context, display)
         total_in += stats.prompt_tokens
         total_out += stats.output_tokens
         messages.append(message)
         calls = message.get("tool_calls") or []
         if not calls:
-            print((f"  turn    {time.monotonic() - turn_started:.1f}s total"
-                   f" · {step + 1} model calls · {tool_count} tool calls"
-                   f" · summed {total_in:,} input + {total_out:,} output tokens"),
-                  file=sys.stderr, flush=True)
+            display.event("└─ turn", (f"{time.monotonic() - turn_started:.1f}s"
+                f" · {step + 1} model calls · {tool_count}"
+                f" {'tool' if tool_count == 1 else 'tools'}"
+                f" · sum {total_in:,} in / {total_out:,} out"), "model")
             return message.get("content", "").strip()
         for call in calls:
             fn = call.get("function") or {}
             name = fn.get("name", "")
             args = fn.get("arguments") or {}
-            print(f"  → {name}  {call_label(name, args)}", file=sys.stderr, flush=True)
+            display.event(f"├─ → {name}", call_label(name, args), "tool")
             tool_started = time.monotonic()
             result = execute(workspace, name, args)
             tool_count += 1
-            print(f"  ← {result_preview(result)} ({time.monotonic() - tool_started:.2f}s)",
-                  file=sys.stderr, flush=True)
+            display.event("│    ← result", (f"{result_preview(result)}"
+                f" ({time.monotonic() - tool_started:.2f}s)"),
+                "error" if result.startswith("ERROR:") or
+                    (result.startswith("exit=") and not result.startswith("exit=0")) else "ok")
             messages.append({"role": "tool", "tool_name": name, "content": result})
     return "Stopped after 12 model steps without a final reply."
 
@@ -236,24 +284,23 @@ def main():
     parser.add_argument("--workspace", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--model", default="gpt-oss:20b")
     parser.add_argument("--context", type=int, default=16384)
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     args = parser.parse_args()
     workspace = args.workspace.expanduser().resolve()
     if not workspace.is_dir():
         parser.error(f"not a directory: {workspace}")
+    display = Display(use_color(args.color))
     messages = [{"role": "system", "content": system_prompt(workspace)}]
-    print(f"BopBop local · {args.model} · {args.context:,} token context", flush=True)
-    print(f"Workspace: {workspace}", flush=True)
-    print("Tools: list_files, read_file, write_file, run_command", flush=True)
-    print("Type /exit to quit.\n", flush=True)
+    display.header(args.model, args.context, workspace)
     if args.prompt:
         prompts = [" ".join(args.prompt)]
     else:
-        prompts = iter(lambda: input("bopbop> "), "/exit")
+        prompts = iter(lambda: input(display.ink("bopbop", "brand") + "> "), "/exit")
     for prompt in prompts:
         if not prompt.strip():
             continue
         messages.append({"role": "user", "content": prompt})
-        print(turn(args.model, messages, workspace, args.context), flush=True)
+        display.answer(turn(args.model, messages, workspace, args.context, display))
 
 
 if __name__ == "__main__":

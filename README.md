@@ -68,6 +68,9 @@ directory using `gpt-oss:20b`. It does not use Claude or Codex and does not
 change the Signal service. It shows tool calls, tool results, per-call token
 counts, model throughput, and response times. Pass a prompt as arguments for
 one turn, or use `--workspace PATH` to choose another working directory.
+Color is automatic in a terminal; use `--color never` or `NO_COLOR=1` for plain
+text. The live progress line is replaced by exact Ollama metrics after each
+model call.
 `run_command` runs with your user permissions; use a workspace you trust.
 
 ## Context packs
