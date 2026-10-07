@@ -3,6 +3,7 @@
 Supported harnesses:
   - Claude Code (``claude -p --output-format stream-json``)
   - Codex CLI (``codex exec --json``)
+  - Local Ollama (``bin/bopbop-local.py --jsonl``)
 """
 
 from __future__ import annotations
@@ -11,12 +12,13 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from typing import AsyncIterator
 
 CONTEXT_DIR = os.path.expanduser(
     os.environ.get("BOPBOP_CONTEXT_DIR", "~/.bopbop/context")
 )
-SUPPORTED_HARNESSES = {"claude", "codex"}
+SUPPORTED_HARNESSES = {"claude", "codex", "ollama"}
 
 
 def agent_harness() -> str:
@@ -34,6 +36,8 @@ def agent_model(harness: str | None = None) -> str | None:
     if harness == "codex":
         # Empty means "use the authenticated Codex installation's default".
         return os.environ.get("BOPBOP_CODEX_MODEL", "").strip() or None
+    if harness == "ollama":
+        return os.environ.get("BOPBOP_OLLAMA_MODEL", "gpt-oss:20b").strip() or "gpt-oss:20b"
     return os.environ.get("BOPBOP_CLAUDE_MODEL", "sonnet").strip() or "sonnet"
 
 
@@ -42,6 +46,17 @@ def _build_args(
 ) -> tuple[str, list[str]]:
     harness = agent_harness()
     model = agent_model(harness)
+
+    if harness == "ollama":
+        binary = os.environ.get("BOPBOP_PYTHON_BIN", "python3")
+        script = str(Path(__file__).resolve().parent.parent / "bin" / "bopbop-local.py")
+        args = [binary, script, "--jsonl", "--workspace", CONTEXT_DIR,
+                "--model", model or "gpt-oss:20b", "--context",
+                os.environ.get("BOPBOP_OLLAMA_CONTEXT", "16384")]
+        if resume_session_id:
+            args.extend(["--session-id", resume_session_id])
+        args.append(prompt)
+        return harness, args
 
     if harness == "codex":
         binary = os.environ.get("BOPBOP_CODEX_BIN", "codex")
@@ -249,11 +264,9 @@ async def run_turn(
                 yield {"kind": "text", "delta": codex_last_message}
                 codex_last_message = None
 
-            normalized = (
-                _codex_events(ev, elapsed_ms)
-                if harness == "codex"
-                else _claude_events(ev)
-            )
+            normalized = ([ev] if harness == "ollama" and ev.get("kind")
+                          else _codex_events(ev, elapsed_ms) if harness == "codex"
+                          else _claude_events(ev))
             for item in normalized:
                 emitted_error = emitted_error or item.get("kind") == "error"
                 yield item

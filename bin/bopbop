@@ -5,6 +5,8 @@
 #   bopbop doctor   check the installation end to end
 #   bopbop run      run the server in the foreground (dev)
 #   bopbop pack     install/list/remove context packs (capability bundles)
+#   bopbop local    start the local Ollama terminal agent
+#   bopbop agent    start a selected interactive harness
 #
 # Installation itself (venv, systemd unit, signal-cli container) is
 # handled by install.sh in the repo root.
@@ -145,13 +147,23 @@ cmd_doctor() {
         fi
     done
 
-    # selected agent CLI
+    # selected agent backend
     local agent_bin
     case "$harness" in
         claude) agent_bin="${BOPBOP_CLAUDE_BIN:-claude}" ;;
         codex)  agent_bin="${BOPBOP_CODEX_BIN:-codex}" ;;
+        ollama)
+            agent_bin=""
+            local ollama_url="${BOPBOP_OLLAMA_HOST:-http://127.0.0.1:11434}"
+            local ollama_model="${BOPBOP_OLLAMA_MODEL:-gpt-oss:20b}"
+            if curl -fsS --max-time 5 "$ollama_url/api/tags" | python3 -c 'import json,sys; model=sys.argv[1]; names={m.get("name") for m in json.load(sys.stdin).get("models", [])}; sys.exit(0 if model in names else 1)' "$ollama_model"; then
+                pass "Ollama reachable; $ollama_model installed"
+            else
+                fail "Ollama unavailable or $ollama_model missing at $ollama_url (try: ollama pull $ollama_model)"
+            fi
+            ;;
         *)
-            fail "unsupported BOPBOP_AGENT_HARNESS '$harness' (expected claude or codex)"
+            fail "unsupported BOPBOP_AGENT_HARNESS '$harness' (expected claude, codex, or ollama)"
             agent_bin=""
             ;;
     esac
@@ -340,10 +352,42 @@ cmd_run() {
     exec "$REPO_DIR/server/.venv/bin/uvicorn" main:app --host 127.0.0.1 --port 8090
 }
 
+cmd_agent() {
+    local harness="${1:-}"
+    if [[ -z "$harness" ]]; then
+        if [[ -f "$ENV_FILE" ]]; then
+            harness=$(grep -E '^BOPBOP_AGENT_HARNESS=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+        fi
+        harness="${harness:-ollama}"
+    else
+        shift
+    fi
+    if [[ -f "$ENV_FILE" ]]; then
+        set -a; # shellcheck disable=SC1090
+        source "$ENV_FILE"; set +a
+    fi
+    case "$harness" in
+        ollama|local) exec python3 "$REPO_DIR/bin/bopbop-local.py" "$@" ;;
+        claude)
+            cd "$(context_dir)"
+            exec "${BOPBOP_CLAUDE_BIN:-claude}" "$@"
+            ;;
+        codex)
+            cd "$(context_dir)"
+            exec "${BOPBOP_CODEX_BIN:-codex}" "$@"
+            ;;
+        *) note "usage: bopbop agent {ollama|claude|codex} [args...]"; exit 1 ;;
+    esac
+}
+
 case "${1:-}" in
+    "")    cmd_agent ollama ;;
     init)   shift; cmd_init "$@" ;;
     doctor) shift; cmd_doctor "$@" ;;
     run)    shift; cmd_run "$@" ;;
     pack)   shift; cmd_pack "$@" ;;
+    local|ollama) shift; cmd_agent ollama "$@" ;;
+    claude|codex) cmd_agent "$@" ;;
+    agent) shift; cmd_agent "$@" ;;
     *)      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

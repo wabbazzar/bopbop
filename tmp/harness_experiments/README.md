@@ -21,3 +21,5 @@ prompt for one turn. It reads top-level `AGENTS.md`, `CLAUDE.md`, and
 and this prototype has no approval step. Use a test workspace while exploring.
 The terminal displays activity during each model call and prints exact token
 and timing telemetry from Ollama when that call completes.
+See the main README's "Experimental local terminal agent" section for slash
+commands, the interactive suggestion menu, and telemetry details.

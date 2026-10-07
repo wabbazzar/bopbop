@@ -9,6 +9,7 @@
 # Flags:
 #   --no-signal     skip the signal-cli container step
 #   --no-start      install but don't start the service
+#   --harness NAME  select claude, codex, or ollama for the service
 #
 # Requires: python3, curl, systemd (user instance), and the selected agent CLI.
 # Docker is only needed for the signal-cli container step.
@@ -18,12 +19,13 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOPBOP_HOME="${BOPBOP_HOME:-$HOME/.bopbop}"
 UNIT_DIR="$HOME/.config/systemd/user"
-NO_SIGNAL=0; NO_START=0
-for a in "$@"; do
-    case "$a" in
-        --no-signal) NO_SIGNAL=1 ;;
-        --no-start)  NO_START=1 ;;
-        *) echo "unknown flag: $a" >&2; exit 1 ;;
+NO_SIGNAL=0; NO_START=0; HARNESS_OVERRIDE=""
+while (( $# )); do
+    case "$1" in
+        --no-signal) NO_SIGNAL=1; shift ;;
+        --no-start) NO_START=1; shift ;;
+        --harness) [[ $# -ge 2 ]] || { echo "--harness needs a value" >&2; exit 1; }; HARNESS_OVERRIDE="$2"; shift 2 ;;
+        *) echo "unknown flag: $1" >&2; exit 1 ;;
     esac
 done
 
@@ -39,9 +41,11 @@ if [[ -f "$BOPBOP_HOME/env" ]]; then
         | tail -1 | cut -d= -f2-)
     [[ -n "$configured_harness" ]] && selected_harness="$configured_harness"
 fi
+[[ -n "$HARNESS_OVERRIDE" ]] && selected_harness="$HARNESS_OVERRIDE"
 case "$selected_harness" in
     claude) selected_bin="claude" ;;
     codex) selected_bin="codex" ;;
+    ollama) selected_bin="ollama" ;;
     *) echo "unsupported BOPBOP_AGENT_HARNESS: $selected_harness" >&2; exit 1 ;;
 esac
 if ! command -v "$selected_bin" >/dev/null; then
@@ -50,6 +54,10 @@ fi
 
 step "Scaffold ~/.bopbop"
 "$REPO_DIR/bin/bopbop" init
+if [[ -n "$HARNESS_OVERRIDE" ]]; then
+    sed -i "s/^BOPBOP_AGENT_HARNESS=.*/BOPBOP_AGENT_HARNESS=$selected_harness/" "$BOPBOP_HOME/env"
+    echo "selected agent harness: $selected_harness"
+fi
 
 step "Python venv"
 if [[ ! -x "$REPO_DIR/server/.venv/bin/uvicorn" ]]; then

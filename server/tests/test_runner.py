@@ -114,6 +114,18 @@ def test_unknown_harness_fails_closed(monkeypatch):
         raise AssertionError("unsupported harness was accepted")
 
 
+def test_ollama_runner_uses_local_transport_and_resume(monkeypatch):
+    monkeypatch.setenv("BOPBOP_AGENT_HARNESS", "ollama")
+    monkeypatch.setenv("BOPBOP_OLLAMA_MODEL", "gpt-oss:20b")
+    monkeypatch.setenv("BOPBOP_OLLAMA_CONTEXT", "8192")
+    harness, args = runner._build_args("hello", "2ed153e6-e45b-4378-8f2e-10d7ab8062e9")
+    assert harness == "ollama"
+    assert args[:3] == ["python3", args[1], "--jsonl"]
+    assert args[1].endswith("/bin/bopbop-local.py")
+    assert args[-5:] == ["--context", "8192", "--session-id",
+                         "2ed153e6-e45b-4378-8f2e-10d7ab8062e9", "hello"]
+
+
 def test_codex_turn_emits_only_final_agent_message(monkeypatch):
     events = [
         {"type": "thread.started", "thread_id": "thread-1"},

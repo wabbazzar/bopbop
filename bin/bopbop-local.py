@@ -21,6 +21,7 @@ import time
 import tty
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 
 
@@ -332,7 +333,8 @@ def chat(model: str, messages: list[dict], context: int, step: int,
     payload = {"model": model, "messages": messages, "tools": TOOLS,
                "stream": True, "think": False,
                "options": {"num_ctx": context, "temperature": 0}, "keep_alive": "10m"}
-    request = urllib.request.Request("http://127.0.0.1:11434/api/chat",
+    host = os.environ.get("BOPBOP_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    request = urllib.request.Request(f"{host}/api/chat",
         data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
     started = time.monotonic()
     progress = {"chunks": 0, "thinking": 0}
@@ -443,7 +445,8 @@ def show_status(model: str, context: int, workspace: pathlib.Path,
     display.event("  context", f"{context:,} tokens", "strong")
     display.event("  history", f"{len(messages) - 1} messages after system instructions", "strong")
     try:
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=3) as response:
+        host = os.environ.get("BOPBOP_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+        with urllib.request.urlopen(f"{host}/api/ps", timeout=3) as response:
             loaded = json.load(response).get("models", [])
     except (OSError, ValueError, urllib.error.URLError) as exc:
         display.event("  Ollama", f"unreachable: {exc}", "error")
@@ -504,12 +507,19 @@ def handle_command(prompt: str, messages: list[dict], session: SessionStats,
 
 
 def turn(model: str, messages: list[dict], workspace: pathlib.Path,
-         context: int, display: Display) -> tuple[str, TurnStats]:
+         context: int, display: Display, emit=None) -> tuple[str, TurnStats]:
     turn_started = time.monotonic()
     usage = TurnStats()
     for step in range(12):
         message, stats = chat(model, messages, context, step + 1, display)
         show_stats(stats, context, display)
+        if emit:
+            emit({"kind": "model", "step": step + 1, "prompt_tokens": stats.prompt_tokens,
+                  "cached_tokens": stats.cached_tokens, "output_tokens": stats.output_tokens,
+                  "duration_ms": round(stats.wall_s * 1000),
+                  "first_chunk_ms": round(stats.first_chunk_s * 1000) if stats.first_chunk_s is not None else None,
+                  "load_ms": round(stats.load_s * 1000), "prompt_ms": round(stats.prompt_s * 1000),
+                  "generation_ms": round(stats.generation_s * 1000), "stream_chunks": stats.stream_chunks})
         usage.model_calls += 1
         usage.input_tokens += stats.prompt_tokens
         usage.output_tokens += stats.output_tokens
@@ -523,12 +533,21 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
                 f" · {usage.model_calls} model calls · {usage.tool_calls}"
                 f" {'tool' if usage.tool_calls == 1 else 'tools'}"
                 f" · sum {usage.input_tokens:,} in / {usage.output_tokens:,} out"), "model")
-            return message.get("content", "").strip(), usage
+            answer = message.get("content", "").strip()
+            if emit:
+                emit({"kind": "text", "delta": answer})
+                emit({"kind": "done", "duration_ms": round(usage.wall_s * 1000),
+                      "usage": {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                                "cached_tokens": usage.cached_tokens, "model_calls": usage.model_calls,
+                                "tool_calls": usage.tool_calls}})
+            return answer, usage
         for call in calls:
             fn = call.get("function") or {}
             name = fn.get("name", "")
             args = fn.get("arguments") or {}
             display.event(f"├─ → {name}", call_label(name, args), "tool")
+            if emit:
+                emit({"kind": "tool", "name": name, "args": args})
             tool_started = time.monotonic()
             result = execute(workspace, name, args)
             usage.tool_calls += 1
@@ -536,22 +555,70 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
                 f" ({time.monotonic() - tool_started:.2f}s)"),
                 "error" if result.startswith("ERROR:") or
                     (result.startswith("exit=") and not result.startswith("exit=0")) else "ok")
+            if emit:
+                emit({"kind": "tool_result", "name": name, "ok": not result.startswith("ERROR:")
+                      and not (result.startswith("exit=") and not result.startswith("exit=0")),
+                      "preview": result_preview(result), "duration_ms": round((time.monotonic() - tool_started) * 1000)})
             messages.append({"role": "tool", "tool_name": name, "content": result})
     usage.wall_s = time.monotonic() - turn_started
+    if emit:
+        emit({"kind": "error", "message": "Stopped after 12 model steps without a final reply."})
     return "Stopped after 12 model steps without a final reply.", usage
+
+
+def jsonl_session(args, workspace: pathlib.Path) -> None:
+    """Server transport for the same local agent loop used by the terminal UI."""
+    session_dir = pathlib.Path(os.path.expanduser(os.environ.get(
+        "BOPBOP_DATA_DIR", "~/.bopbop/data"))) / "ollama_sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    session_dir.chmod(0o700)
+    session_id = args.session_id or str(uuid.uuid4())
+    try:
+        session_id = str(uuid.UUID(session_id))
+    except ValueError as exc:
+        raise ValueError("invalid Ollama session id") from exc
+    path = session_dir / f"{session_id}.json"
+    messages = [{"role": "system", "content": system_prompt(workspace)}]
+    if args.session_id and path.is_file():
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("workspace") == str(workspace) and saved.get("model") == args.model:
+            messages = saved["messages"]
+
+    def emit(event: dict) -> None:
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+
+    emit({"kind": "session", "session_id": session_id})
+    messages.append({"role": "user", "content": " ".join(args.prompt)})
+    class QuietDisplay:
+        def event(self, *unused, **kwargs):
+            pass
+    answer, _ = turn(args.model, messages, workspace, args.context, QuietDisplay(), emit=emit)
+    if not answer.startswith("Stopped after 12 model steps"):
+        tmp = session_dir / f".{session_id}.{os.getpid()}.tmp"
+        with tmp.open("w", encoding="utf-8") as file:
+            os.fchmod(file.fileno(), 0o600)
+            json.dump({"workspace": str(workspace), "model": args.model, "messages": messages}, file)
+        tmp.replace(path)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("prompt", nargs="*")
     parser.add_argument("--workspace", type=pathlib.Path, default=pathlib.Path.cwd())
-    parser.add_argument("--model", default="gpt-oss:20b")
-    parser.add_argument("--context", type=int, default=16384)
+    parser.add_argument("--model", default=os.environ.get("BOPBOP_OLLAMA_MODEL", "gpt-oss:20b"))
+    parser.add_argument("--context", type=int, default=int(os.environ.get("BOPBOP_OLLAMA_CONTEXT", "16384")))
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("--jsonl", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--session-id", help=argparse.SUPPRESS)
     args = parser.parse_args()
     workspace = args.workspace.expanduser().resolve()
     if not workspace.is_dir():
         parser.error(f"not a directory: {workspace}")
+    if args.jsonl:
+        if not args.prompt:
+            parser.error("--jsonl requires a prompt")
+        jsonl_session(args, workspace)
+        return
     display = Display(use_color(args.color))
     messages = [{"role": "system", "content": system_prompt(workspace)}]
     session = SessionStats()
