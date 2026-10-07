@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from bopbop_splash import show_banner
 
 
 SLASH_COMMANDS = (
@@ -54,10 +55,13 @@ class Display:
         print(f"  {self.ink(label, style)}{('  ' + detail) if detail else ''}",
               file=sys.stderr, flush=True)
 
-    def header(self, model: str, context: int, workspace: pathlib.Path) -> None:
-        print(self.ink("● bopbop", "brand") + self.ink("  LOCAL AGENT", "muted"))
-        print(f"  {self.ink(model, 'strong')}  {self.ink('·', 'muted')}"
-              f"  {context:,} token context")
+    def header(self, model: str, context: int, workspace: pathlib.Path,
+               banner: str = "auto", interactive: bool = True) -> None:
+        if not show_banner(model, context, color=self.color,
+                           mode=banner, interactive=interactive):
+            print(self.ink("● bopbop", "brand") + self.ink("  LOCAL AGENT", "muted"))
+            print(f"  {self.ink(model, 'strong')}  {self.ink('·', 'muted')}"
+                  f"  {context:,} token context")
         print(f"  {self.ink('cwd', 'muted')}  {workspace}")
         print(self.ink("  ───────────────────────────────────────────────", "muted"))
         print(self.ink("  /help commands  ·  /exit quit  ·  tools run as your user", "muted"), flush=True)
@@ -608,6 +612,8 @@ def main():
     parser.add_argument("--model", default=os.environ.get("BOPBOP_OLLAMA_MODEL", "gpt-oss:20b"))
     parser.add_argument("--context", type=int, default=int(os.environ.get("BOPBOP_OLLAMA_CONTEXT", "16384")))
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("--banner", choices=("auto", "static", "off"), default="auto",
+                        help="startup portrait: brief wave, still image, or compact text")
     parser.add_argument("--jsonl", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--session-id", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -622,7 +628,8 @@ def main():
     display = Display(use_color(args.color))
     messages = [{"role": "system", "content": system_prompt(workspace)}]
     session = SessionStats()
-    display.header(args.model, args.context, workspace)
+    display.header(args.model, args.context, workspace, args.banner,
+                   interactive=not bool(args.prompt))
     if args.prompt:
         prompts = [" ".join(args.prompt)]
     else:

@@ -124,7 +124,13 @@ replayed conversation history is counted again on each call. `stream chunks`
 and `thinking chars` are activity indicators, not token counts.
 
 Color is automatic in a terminal. Use `--color never` or `NO_COLOR=1` for plain
-text. `read_file` and `write_file` stay within the selected workspace, while
+text. Startup shows the original pearly BopBop character with a brief arm wave.
+Use `bopbop local --banner static` for a still portrait or `--banner off` for
+a compact text header. The portrait adapts to terminal width; redirected
+output and server JSONL use their normal text formats. Art is bundled with
+the CLI and requires no additional packages.
+
+`read_file` and `write_file` stay within the selected workspace, while
 `run_command` executes with your user permissions and has no approval step.
 Use a workspace you trust.
 
