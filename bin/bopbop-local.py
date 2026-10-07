@@ -10,14 +10,27 @@ import argparse
 import json
 import os
 import pathlib
+import readline
+import select
 import shlex
 import subprocess
 import sys
+import termios
 import threading
 import time
+import tty
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+
+
+SLASH_COMMANDS = (
+    ("/help", "Show this list"),
+    ("/status", "Show model, workspace, context, and Ollama load state"),
+    ("/stats", "Show last-turn and current-session usage"),
+    ("/reset", "Clear conversation and stats; keep workspace instructions"),
+    ("/exit", "Leave BopBop"),
+)
 
 
 class Display:
@@ -32,6 +45,7 @@ class Display:
         codes = {
             "brand": "1;36", "model": "36", "tool": "1;33",
             "ok": "1;32", "error": "1;31", "muted": "90", "strong": "1",
+            "selected": "1;30;46",
         }
         return f"\x1b[{codes[style]}m{value}\x1b[0m"
 
@@ -58,6 +72,146 @@ def use_color(option: str) -> bool:
     if option == "always":
         return True
     return sys.stdout.isatty() and sys.stderr.isatty() and os.environ.get("TERM") != "dumb"
+
+
+def _escape_key(fd: int) -> str:
+    """Read a short terminal escape sequence, or treat bare Esc as dismiss."""
+    if not select.select([fd], [], [], 0.05)[0]:
+        return "escape"
+    second = os.read(fd, 1)
+    if second != b"[":
+        return "escape"
+    if not select.select([fd], [], [], 0.05)[0]:
+        return "escape"
+    third = os.read(fd, 1)
+    return {b"A": "up", b"B": "down", b"C": "right", b"D": "left"}.get(third, "escape")
+
+
+def _slash_prompt(fd: int, prompt: str, display: Display) -> str | None:
+    """Edit a slash command below the prompt; None returns to normal input."""
+    buffer = "/"
+    cursor = 1
+    selected = 0
+    menu_visible = True
+    prompt_width = len("bopbop> ")
+
+    def matches() -> list[tuple[str, str]]:
+        return [(name, description) for name, description in SLASH_COMMANDS
+                if name.startswith(buffer.lower())] if buffer.startswith("/") else []
+
+    def render() -> None:
+        found = matches() if menu_visible else []
+        rows = []
+        if menu_visible and buffer.startswith("/"):
+            if found:
+                for index, (name, description) in enumerate(found):
+                    marker = "▸" if index == selected else " "
+                    style = "selected" if index == selected else "strong"
+                    rows.append(f"  {display.ink(marker + ' ' + name.ljust(9), style)}"
+                                f"  {display.ink(description, 'muted')}")
+            else:
+                rows.append("  " + display.ink("No matching commands", "muted"))
+        sys.stdout.write("\r\x1b[J" + prompt + buffer)
+        if rows:
+            sys.stdout.write("\r\n" + "\r\n".join(rows))
+            sys.stdout.write(f"\x1b[{len(rows)}A")
+        sys.stdout.write("\r" + f"\x1b[{prompt_width + cursor}C")
+        sys.stdout.flush()
+
+    def finish(value: str) -> str:
+        sys.stdout.write("\r\x1b[J" + prompt + value + "\r\n")
+        sys.stdout.flush()
+        return value
+
+    render()
+    while True:
+        key = os.read(fd, 1)
+        if not key:
+            raise EOFError
+        if key in (b"\r", b"\n"):
+            found = matches() if menu_visible else []
+            chosen = found[selected][0] if found else buffer
+            return finish(chosen)
+        if key == b"\x03":
+            sys.stdout.write("\r\x1b[J" + prompt + "^C\r\n")
+            sys.stdout.flush()
+            raise KeyboardInterrupt
+        if key == b"\x04" and not buffer:
+            raise EOFError
+        if key in (b"\x7f", b"\x08"):
+            if cursor:
+                buffer = buffer[:cursor - 1] + buffer[cursor:]
+                cursor -= 1
+                selected = 0
+                if not buffer:
+                    return None
+        elif key == b"\t":
+            found = matches()
+            if found:
+                buffer = found[selected][0]
+                cursor = len(buffer)
+                menu_visible = True
+        elif key == b"\x1b":
+            action = _escape_key(fd)
+            found = matches() if menu_visible else []
+            if action == "up" and found:
+                selected = (selected - 1) % len(found)
+            elif action == "down" and found:
+                selected = (selected + 1) % len(found)
+            elif action == "left":
+                cursor = max(0, cursor - 1)
+            elif action == "right":
+                cursor = min(len(buffer), cursor + 1)
+            elif action == "escape":
+                menu_visible = False
+        elif key == b"\x01":
+            cursor = 0
+        elif key == b"\x05":
+            cursor = len(buffer)
+        elif 32 <= key[0] < 127:
+            buffer = buffer[:cursor] + key.decode("ascii") + buffer[cursor:]
+            cursor += 1
+            selected = 0
+        render()
+
+
+def prompt_line(display: Display) -> str:
+    """Read ordinary text with readline; show a menu as soon as `/` is typed."""
+    prompt = display.ink("bopbop", "brand") + "> "
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return input(prompt)
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    try:
+        tty.setraw(fd)
+        first = os.read(fd, 1)
+        if first == b"/":
+            slash_result = _slash_prompt(fd, prompt, display)
+        else:
+            slash_result = None
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+    if first == b"/" and slash_result is not None:
+        return slash_result
+    if first in (b"\r", b"\n"):
+        sys.stdout.write("\r\n")
+        return ""
+    if first == b"\x03":
+        sys.stdout.write("^C\r\n")
+        raise KeyboardInterrupt
+    if first == b"\x04" or not first:
+        raise EOFError
+    initial = "" if first == b"/" else first.decode("utf-8", errors="replace")
+    sys.stdout.write("\r\x1b[2K")
+    sys.stdout.flush()
+    if initial:
+        readline.set_startup_hook(lambda: readline.insert_text(initial))
+    try:
+        return input(prompt)
+    finally:
+        readline.set_startup_hook(None)
 
 
 def tool(name: str, description: str, properties: dict, required: list[str]):
@@ -276,13 +430,7 @@ def system_prompt(workspace: pathlib.Path) -> str:
 def show_help(display: Display) -> None:
     print()
     display.event("◆ commands", style="brand")
-    for command, description in (
-        ("/help", "Show this list"),
-        ("/status", "Show model, workspace, context, and Ollama load state"),
-        ("/stats", "Show last-turn and current-session usage"),
-        ("/reset", "Clear conversation and stats; keep workspace instructions"),
-        ("/exit", "Leave BopBop"),
-    ):
+    for command, description in SLASH_COMMANDS:
         display.event(f"  {command:<8}", description, "strong")
 
 
@@ -411,7 +559,15 @@ def main():
     if args.prompt:
         prompts = [" ".join(args.prompt)]
     else:
-        prompts = iter(lambda: input(display.ink("bopbop", "brand") + "> "), "/exit")
+        def interactive_prompts():
+            while True:
+                try:
+                    yield prompt_line(display)
+                except KeyboardInterrupt:
+                    continue
+                except EOFError:
+                    return
+        prompts = interactive_prompts()
     for prompt in prompts:
         prompt = prompt.strip()
         if not prompt:

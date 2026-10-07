@@ -77,6 +77,8 @@ Inside the terminal agent, `/help` lists local commands. `/status` shows the
 model, workspace, context, history size, and Ollama load state. `/stats` shows
 last-turn and session totals. `/reset` clears the conversation and those totals
 while retaining workspace instructions.
+Typing `/` in an interactive terminal opens a command menu; type to filter,
+use ↑/↓ to choose, Enter to run, Tab to complete, or Esc to dismiss it.
 
 ## Context packs
 
