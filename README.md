@@ -73,6 +73,11 @@ text. The live progress line is replaced by exact Ollama metrics after each
 model call.
 `run_command` runs with your user permissions; use a workspace you trust.
 
+Inside the terminal agent, `/help` lists local commands. `/status` shows the
+model, workspace, context, history size, and Ollama load state. `/stats` shows
+last-turn and session totals. `/reset` clears the conversation and those totals
+while retaining workspace instructions.
+
 ## Context packs
 
 A **pack** is an installable capability bundle for your agent — a git repo

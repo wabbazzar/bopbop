@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -44,7 +45,7 @@ class Display:
               f"  {context:,} token context")
         print(f"  {self.ink('cwd', 'muted')}  {workspace}")
         print(self.ink("  ───────────────────────────────────────────────", "muted"))
-        print(self.ink("  /exit to quit  ·  tools run as your user", "muted"), flush=True)
+        print(self.ink("  /help commands  ·  /exit quit  ·  tools run as your user", "muted"), flush=True)
 
     def answer(self, value: str) -> None:
         print("\n" + self.ink("◆ answer", "ok"))
@@ -121,6 +122,33 @@ class ModelStats:
     prompt_s: float
     stream_chunks: int
     thinking_chars: int
+
+
+@dataclass
+class TurnStats:
+    wall_s: float = 0
+    model_calls: int = 0
+    tool_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    generation_s: float = 0
+
+
+@dataclass
+class SessionStats:
+    last: TurnStats | None = None
+    turns: int = 0
+    totals: TurnStats | None = None
+
+    def record(self, turn: TurnStats) -> None:
+        self.last = turn
+        self.turns += 1
+        if self.totals is None:
+            self.totals = TurnStats()
+        for field in ("wall_s", "model_calls", "tool_calls", "input_tokens",
+                      "output_tokens", "cached_tokens", "generation_s"):
+            setattr(self.totals, field, getattr(self.totals, field) + getattr(turn, field))
 
 
 def _seconds(value: int | None) -> float:
@@ -245,23 +273,109 @@ def system_prompt(workspace: pathlib.Path) -> str:
     return "\n".join(parts)
 
 
+def show_help(display: Display) -> None:
+    print()
+    display.event("◆ commands", style="brand")
+    for command, description in (
+        ("/help", "Show this list"),
+        ("/status", "Show model, workspace, context, and Ollama load state"),
+        ("/stats", "Show last-turn and current-session usage"),
+        ("/reset", "Clear conversation and stats; keep workspace instructions"),
+        ("/exit", "Leave BopBop"),
+    ):
+        display.event(f"  {command:<8}", description, "strong")
+
+
+def show_status(model: str, context: int, workspace: pathlib.Path,
+                messages: list[dict], display: Display) -> None:
+    print()
+    display.event("◆ status", style="brand")
+    display.event("  model", model, "strong")
+    display.event("  workspace", str(workspace), "strong")
+    display.event("  context", f"{context:,} tokens", "strong")
+    display.event("  history", f"{len(messages) - 1} messages after system instructions", "strong")
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=3) as response:
+            loaded = json.load(response).get("models", [])
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        display.event("  Ollama", f"unreachable: {exc}", "error")
+        return
+    active = next((item for item in loaded if item.get("name") == model
+                   or item.get("model") == model), None)
+    if active is None:
+        display.event("  Ollama", "reachable · model not loaded", "muted")
+        return
+    size_gib = (active.get("size") or 0) / (1024 ** 3)
+    vram_gib = (active.get("size_vram") or 0) / (1024 ** 3)
+    loaded_context = active.get("context_length")
+    details = f"loaded · {size_gib:.1f} GiB resident · {vram_gib:.1f} GiB VRAM"
+    if loaded_context:
+        details += f" · {loaded_context:,} active context"
+    display.event("  Ollama", details, "ok")
+
+
+def show_session_stats(session: SessionStats, display: Display) -> None:
+    print()
+    display.event("◆ stats", style="brand")
+    if session.last is None or session.totals is None:
+        display.event("  no completed turns yet", style="muted")
+        return
+    for label, usage in (("last", session.last), ("session", session.totals)):
+        speed = usage.output_tokens / usage.generation_s if usage.generation_s else 0
+        turn_count = (f"{session.turns} {'turn' if session.turns == 1 else 'turns'} · "
+                      if label == "session" else "")
+        display.event(f"  {label}", (f"{turn_count}{usage.wall_s:.1f}s wall"
+            f" · {usage.model_calls} {'model call' if usage.model_calls == 1 else 'model calls'}"
+            f" · {usage.tool_calls} {'tool' if usage.tool_calls == 1 else 'tools'}"), "strong")
+        display.event("    tokens", (f"{usage.input_tokens:,} in"
+            f" · {usage.output_tokens:,} out · {usage.cached_tokens:,} cached"
+            f" · {speed:.1f} generation tok/s"))
+
+
+def handle_command(prompt: str, messages: list[dict], session: SessionStats,
+                   model: str, context: int, workspace: pathlib.Path,
+                   display: Display) -> bool:
+    if not prompt.startswith("/"):
+        return False
+    command = prompt.split(maxsplit=1)[0].lower()
+    if command == "/help":
+        show_help(display)
+    elif command == "/status":
+        show_status(model, context, workspace, messages, display)
+    elif command == "/stats":
+        show_session_stats(session, display)
+    elif command == "/reset":
+        messages[:] = messages[:1]
+        session.last = None
+        session.turns = 0
+        session.totals = None
+        display.event("↺ reset", "Conversation and stats cleared; workspace instructions kept", "ok")
+    else:
+        display.event("Unknown command", f"{command} · type /help", "error")
+    return True
+
+
 def turn(model: str, messages: list[dict], workspace: pathlib.Path,
-         context: int, display: Display) -> str:
+         context: int, display: Display) -> tuple[str, TurnStats]:
     turn_started = time.monotonic()
-    total_in = total_out = tool_count = 0
+    usage = TurnStats()
     for step in range(12):
         message, stats = chat(model, messages, context, step + 1, display)
         show_stats(stats, context, display)
-        total_in += stats.prompt_tokens
-        total_out += stats.output_tokens
+        usage.model_calls += 1
+        usage.input_tokens += stats.prompt_tokens
+        usage.output_tokens += stats.output_tokens
+        usage.cached_tokens += stats.cached_tokens
+        usage.generation_s += stats.generation_s
         messages.append(message)
         calls = message.get("tool_calls") or []
         if not calls:
-            display.event("└─ turn", (f"{time.monotonic() - turn_started:.1f}s"
-                f" · {step + 1} model calls · {tool_count}"
-                f" {'tool' if tool_count == 1 else 'tools'}"
-                f" · sum {total_in:,} in / {total_out:,} out"), "model")
-            return message.get("content", "").strip()
+            usage.wall_s = time.monotonic() - turn_started
+            display.event("└─ turn", (f"{usage.wall_s:.1f}s"
+                f" · {usage.model_calls} model calls · {usage.tool_calls}"
+                f" {'tool' if usage.tool_calls == 1 else 'tools'}"
+                f" · sum {usage.input_tokens:,} in / {usage.output_tokens:,} out"), "model")
+            return message.get("content", "").strip(), usage
         for call in calls:
             fn = call.get("function") or {}
             name = fn.get("name", "")
@@ -269,13 +383,14 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
             display.event(f"├─ → {name}", call_label(name, args), "tool")
             tool_started = time.monotonic()
             result = execute(workspace, name, args)
-            tool_count += 1
+            usage.tool_calls += 1
             display.event("│    ← result", (f"{result_preview(result)}"
                 f" ({time.monotonic() - tool_started:.2f}s)"),
                 "error" if result.startswith("ERROR:") or
                     (result.startswith("exit=") and not result.startswith("exit=0")) else "ok")
             messages.append({"role": "tool", "tool_name": name, "content": result})
-    return "Stopped after 12 model steps without a final reply."
+    usage.wall_s = time.monotonic() - turn_started
+    return "Stopped after 12 model steps without a final reply.", usage
 
 
 def main():
@@ -291,16 +406,25 @@ def main():
         parser.error(f"not a directory: {workspace}")
     display = Display(use_color(args.color))
     messages = [{"role": "system", "content": system_prompt(workspace)}]
+    session = SessionStats()
     display.header(args.model, args.context, workspace)
     if args.prompt:
         prompts = [" ".join(args.prompt)]
     else:
         prompts = iter(lambda: input(display.ink("bopbop", "brand") + "> "), "/exit")
     for prompt in prompts:
-        if not prompt.strip():
+        prompt = prompt.strip()
+        if not prompt:
+            continue
+        if prompt == "/exit":
+            break
+        if handle_command(prompt, messages, session, args.model, args.context,
+                          workspace, display):
             continue
         messages.append({"role": "user", "content": prompt})
-        display.answer(turn(args.model, messages, workspace, args.context, display))
+        answer, usage = turn(args.model, messages, workspace, args.context, display)
+        session.record(usage)
+        display.answer(answer)
 
 
 if __name__ == "__main__":
