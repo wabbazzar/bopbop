@@ -18,13 +18,23 @@ tools in the local harness. `--packs` adds native tools to the general workspace
 agent. A profile may be the pack name or its unique `profile` alias. Missing
 profiles, ambiguous aliases and colliding tool names fail before a model call.
 
+For repeat terminal use, set `BOPBOP_CLI_PACKS=ice` (or a comma-separated list)
+in `~/.bopbop/env`. Plain `bopbop` and `bopbop local` then add those tools to the
+workspace agent. This setting applies only through the terminal launcher;
+browser and Signal preferences remain separate. Explicit `--packs` overrides
+this default; `--packs ''` disables additions for one launch. Restart an open
+CLI to load changes, and run `source ~/.bashrc` if that shell still has an older
+alias pointing directly at the Python script.
+
 Claude and Codex receive a per-invocation MCP server and pack instructions.
 Their own built-in capabilities remain available. Selecting the Ice profile
 **does not sandbox a wrapper agent**. Use the local profile when you want the
 four-tool interface without workspace tools.
 
-For the Signal/HTTP server, set `BOPBOP_AGENT_PROFILE=my-pack` in the env file
-and restart `bopbop.service`. The selected harness uses the same pack. Local
+For the Signal/HTTP server, select the context pack in the browser's Settings,
+or set `BOPBOP_AGENT_PROFILE=my-pack` as an env default and restart the service.
+Saved browser preferences override those defaults; see [PWA settings](pwa.md#server-settings).
+The selected harness uses the same pack. Local
 persistent sessions are keyed by workspace, model, profile and pack instruction/
 schema fingerprint; changing these starts fresh context. Restart/reset wrapper
 sessions when changing their pack configuration.
@@ -117,7 +127,10 @@ and `--context-dir /path/to/context mcp --packs my-pack`.
 
 ## Trace and diagnostics
 
-`/tools` shows enabled schemas without contacting the model. Native calls show
+`/tools` groups enabled tool names/descriptions by workspace and pack, and shows
+installed native packs that need selection, with activation commands. It does
+not contact the model or dashboard. `bopbop pack tools NAME` prints full argument
+schemas. Native calls show
 state, response bytes, source age, truncation, cache status and API time.
 Model telemetry distinguishes first activity from first answer, and reports
 load, prompt evaluation, generation, token counts and total turn duration.

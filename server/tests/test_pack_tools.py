@@ -39,6 +39,37 @@ def test_real_handler_and_profile_alias(installed):
     assert Registry(installed.parents[1],['sample']).fingerprint==registry.fingerprint
 
 
+@pytest.mark.parametrize('args,enabled,workspace', [
+    ([], True, True),
+    (['--packs', ''], False, True),
+    (['--profile', 'test'], True, False),
+])
+def test_launcher_cli_pack_defaults_and_tools_listing(installed, tmp_path, args, enabled, workspace):
+    import shlex
+    home = tmp_path / 'bopbop-home'
+    home.mkdir()
+    (home / 'env').write_text(
+        f'BOPBOP_CONTEXT_DIR={shlex.quote(str(installed.parents[1]))}\n'
+        'BOPBOP_CLI_PACKS=test\n'
+        'BOPBOP_OLLAMA_HOST=http://127.0.0.1:1\n'
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith('BOPBOP_')}
+    env['BOPBOP_HOME'] = str(home)
+    # No model or API is reachable. Listing must work from an unrelated cwd.
+    result = subprocess.run([str(ROOT / 'bin/bopbop'), 'local', '--banner', 'off',
+                             '--color', 'never', *args, '/tools'], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert ('sample_count' in result.stderr) is enabled
+    assert ('read_file' in result.stderr) is workspace
+    if enabled:
+        assert 'Pack · sample (test)' in result.stderr
+        assert 'installed, not enabled' not in result.stderr
+    else:
+        assert 'installed, not enabled' in result.stderr
+        assert 'bopbop local --packs sample' in result.stderr
+
+
 @pytest.mark.parametrize('arguments',[
     None,[],{'window':'24h','limit':True},{'window':'24h','limit':0},
     {'window':'24h','limit':21},{'window':'24h','limit':1.5},

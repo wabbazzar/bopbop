@@ -456,7 +456,11 @@ cmd_agent() {
         exec python3 "$REPO_DIR/bin/bopbop-pack.py" --context-dir "$ctx" wrapper --harness "$harness" --profile "$profile" -- "${args[@]}"
     fi
     case "$harness" in
-        ollama|local) exec python3 "$REPO_DIR/bin/bopbop-local.py" "${args[@]}" ;;
+        ollama|local)
+            # CLI-only additions do not alter the browser/Signal server tools.
+            export BOPBOP_AGENT_PACKS="${BOPBOP_CLI_PACKS-${BOPBOP_AGENT_PACKS:-}}"
+            exec python3 "$REPO_DIR/bin/bopbop-local.py" "${args[@]}"
+            ;;
         claude)
             cd "$(context_dir)"
             exec "${BOPBOP_CLAUDE_BIN:-claude}" "${args[@]}"

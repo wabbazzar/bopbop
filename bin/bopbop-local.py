@@ -24,14 +24,14 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from bopbop_splash import show_banner
-from bopbop_packs import Registry, context_directory
+from bopbop_packs import Pack, Registry, context_directory
 
 
 SLASH_COMMANDS = (
     ("/help", "Show this list"),
     ("/status", "Show model, workspace, context, and Ollama load state"),
     ("/stats", "Show last-turn and current-session usage"),
-    ("/tools", "Show the enabled native tools and their purpose"),
+    ("/tools", "Show enabled tools by pack and installed packs to enable"),
     ("/reset", "Clear conversation and stats; keep workspace instructions"),
     ("/exit", "Leave BopBop"),
 )
@@ -294,6 +294,7 @@ class AgentRuntime:
     profile: str | None = None
     thinking: str | bool | None = None
     max_output_tokens: int = 2048
+    context_dir: pathlib.Path | None = None
 
     @property
     def tools(self):
@@ -531,6 +532,40 @@ def show_session_stats(session: SessionStats, display: Display) -> None:
             f" · {speed:.1f} generation tok/s"))
 
 
+def show_tools(runtime: AgentRuntime, display: Display) -> None:
+    print()
+    display.event("◆ enabled tools", style="brand")
+    if not runtime.profile:
+        display.event("  Workspace", style="strong")
+        for entry in TOOLS:
+            fn = entry['function']
+            display.event(f"    {fn['name']}", fn['description'], 'tool')
+    enabled = set()
+    if runtime.registry:
+        for pack in runtime.registry.packs:
+            enabled.add(pack.name)
+            display.event(f"  Pack · {pack.name} ({pack.profile})", pack.metadata.get('description', ''), 'strong')
+            for definition in pack.definitions:
+                display.event(f"    {definition['name']}", definition['description'], 'tool')
+    context = runtime.context_dir or (runtime.registry.context if runtime.registry else context_directory())
+    available = []
+    for manifest in sorted((context / 'packs').glob('*/pack.toml')):
+        try:
+            pack = Pack(manifest.parent)
+        except (OSError, ValueError):
+            continue
+        if pack.definitions and pack.name not in enabled:
+            available.append(pack)
+    if available:
+        display.event("◆ installed, not enabled", style="brand")
+        for pack in available:
+            display.event(f"  {pack.name} ({pack.profile})", pack.metadata.get('description', ''), 'muted')
+            display.event("    add tools", f"bopbop local --packs {pack.name}", 'strong')
+            display.event("    specialist", f"bopbop local --profile {pack.name}", 'strong')
+    if not runtime.registry:
+        display.event("  packs", "No native pack enabled. Inspect installations with: bopbop pack list", 'muted')
+
+
 def handle_command(prompt: str, messages: list[dict], session: SessionStats,
                    model: str, context: int, workspace: pathlib.Path,
                    display: Display, runtime: AgentRuntime | None = None) -> bool:
@@ -544,9 +579,7 @@ def handle_command(prompt: str, messages: list[dict], session: SessionStats,
     elif command == "/stats":
         show_session_stats(session, display)
     elif command == "/tools":
-        for entry in (runtime or AgentRuntime()).tools:
-            fn = entry["function"]
-            display.event(fn["name"], fn["description"], "tool")
+        show_tools(runtime or AgentRuntime(), display)
     elif command == "/reset":
         messages[:] = messages[:1]
         session.last = None
@@ -733,7 +766,7 @@ def main():
     if not 64 <= maximum <= 8192:
         parser.error("--max-output must be 64–8192")
     thinking = {"false": False, "true": True}.get(args.think, args.think)
-    runtime = AgentRuntime(registry, args.profile, thinking, maximum)
+    runtime = AgentRuntime(registry, args.profile, thinking, maximum, args.context_dir.expanduser().resolve())
     if args.jsonl:
         if not args.prompt:
             parser.error("--jsonl requires a prompt")

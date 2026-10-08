@@ -114,7 +114,7 @@ menu. These commands run locally and do not call the model:
 | `/help` | List commands |
 | `/status` | Show model, workspace, context, conversation length, and Ollama load state |
 | `/stats` | Show last-turn and current-session time, tool calls, and tokens |
-| `/tools` | Show enabled native tools and argument schemas |
+| `/tools` | Show enabled tools grouped by pack, plus installed packs and activation commands |
 | `/reset` | Clear conversation and stats, retaining workspace instructions |
 | `/exit` | Leave the agent |
 
@@ -151,8 +151,13 @@ implemented with four native tools and compact read-only dashboard APIs.
 ```bash
 bopbop pack install ./packs/ice-dashboard
 bopbop local --profile ice
+bopbop local --packs ice           # workspace tools plus the Ice API
 bopbop agent codex --profile ice    # or claude
 ```
+
+To include Ice in every normal terminal launch, set `BOPBOP_CLI_PACKS=ice`
+in `~/.bopbop/env` and relaunch `bopbop`. `/tools` labels the pack as
+`ice-dashboard (ice)` and lists its four `ice_*` API tools.
 
 See [native pack tools](docs/pack-tools.md) for schemas, handlers, MCP, profile
 selection and server integration; [validation](docs/ice-pack-validation.md)
@@ -235,6 +240,7 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 | `BOPBOP_DATA_DIR` | `~/.bopbop/data` | sqlite db + downloaded attachments |
 | `BOPBOP_AGENT_HARNESS` | `claude` | server backend: `claude`, `codex`, or `ollama` |
 | `BOPBOP_AGENT_PROFILE` | unset | installed pack/profile for all server harnesses |
+| `BOPBOP_CLI_PACKS` | unset | extra installed native packs for local terminal launches only, comma-separated |
 | `BOPBOP_CLAUDE_BIN` | `claude` | Claude Code binary |
 | `BOPBOP_CLAUDE_MODEL` | `sonnet` | model per turn |
 | `BOPBOP_CODEX_BIN` | `codex` | Codex CLI binary |
