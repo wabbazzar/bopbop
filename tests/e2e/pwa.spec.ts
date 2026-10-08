@@ -1,13 +1,17 @@
 import { test, expect, type Page } from '@playwright/test';
+import { EMOTES } from '../../src/lib/emote';
+test.beforeEach(async ({ request }) => { expect((await request.post('/api/fixture/reset')).ok()).toBe(true); });
 async function open(page: Page) {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'What’s on your mind?' })).toBeVisible();
   await expect(page.locator('.connection')).toContainText('gpt-oss:20b');
 }
 async function token(page: Page, value = 'fixture-access') {
-  await page.getByLabel('Settings', { exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByLabel(/Access token/).fill(value);
   await page.getByRole('button', { name: 'Save token' }).click();
+  await expect(page.getByLabel('Harness', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Close settings' }).click();
 }
 async function send(page: Page, message: string) {
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill(message);
@@ -49,8 +53,10 @@ test('token gate opens settings and wrong credentials produce a recoverable erro
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('hello');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.getByLabel(/Access token/)).toBeVisible();
-  await page.getByLabel(/Access token/).fill('incorrect');
+  await page.getByLabel('Access token', { exact: true }).fill('incorrect');
   await page.getByRole('button', { name: 'Save token' }).click();
+  await expect(page.getByRole('alert')).toContainText('access token');
+  await page.getByRole('button', { name: 'Close settings' }).click();
   await send(page, 'hello');
   await expect(page.getByRole('alert')).toContainText('Access token');
   await token(page); await send(page, 'resume check');
@@ -138,4 +144,133 @@ test('installable shell reloads offline, retains history, and never caches API d
   await expect(page.locator('.connection')).toContainText('gpt-oss:20b');
   await send(page, 'resume check');
   await expect(page.getByTestId('answer').last()).toHaveText('Session resumed.');
+});
+
+test('server settings select an installed model and pack, survive reload, and reach the next turn', async ({ page }) => {
+  await open(page); await token(page);
+  await send(page, 'resume check');
+  await expect(page.getByTestId('answer')).toHaveText('Fresh session.');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByLabel('Model', { exact: true })).toBeVisible();
+  await page.getByLabel('Model', { exact: true }).selectOption('fixture-small:latest');
+  await page.getByLabel('Context pack', { exact: true }).selectOption('ice');
+  await page.getByLabel('Context size', { exact: true }).selectOption('8192');
+  await page.getByRole('button', { name: 'Save agent settings' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved. New turns' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await expect(page.locator('.connection')).toContainText('fixture-small:latest');
+  await page.reload();
+  await expect(page.locator('.connection')).toContainText('fixture-small:latest');
+  await send(page, 'resume check');
+  await expect(page.getByTestId('answer').last()).toHaveText('Fresh session.');
+  await send(page, 'configuration check');
+  await expect(page.getByTestId('answer').last()).toHaveText('ollama / fixture-small:latest / ice / 8192');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByLabel('Harness', { exact: true }).selectOption('codex');
+  await page.getByLabel('Model', { exact: true }).fill('fixture-codex');
+  await page.getByRole('button', { name: 'Save agent settings' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved. New turns' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await send(page, 'configuration check');
+  await expect(page.getByTestId('answer').last()).toHaveText('codex / fixture-codex / ice / 8192');
+  await page.getByText('Agent trace', { exact: true }).last().click();
+  await expect(page.getByTestId('trace').last()).toContainText('fixture-codex');
+});
+
+test('changing settings while a reply runs leaves that reply on its original model', async ({ page }) => {
+  await open(page); await token(page);
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('slow reply configuration check');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.locator('.working')).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByLabel('Model', { exact: true }).selectOption('fixture-small:latest');
+  await page.getByRole('button', { name: 'Save agent settings' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved. New turns' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await expect(page.getByTestId('answer')).toHaveText('ollama / gpt-oss:20b / general / 16384');
+  await send(page, 'configuration check');
+  await expect(page.getByTestId('answer').last()).toHaveText('ollama / fixture-small:latest / general / 16384');
+});
+
+test('iPhone SE, 13, 15 and Pro Max dimensions keep composer, touch targets, and sheet usable', async ({ page }) => {
+  await open(page); await token(page);
+  for (const viewport of [{ width: 375, height: 667 }, { width: 390, height: 844 }, { width: 393, height: 852 }, { width: 430, height: 932 }, { width: 393, height: 340 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(async () => {
+      const box = await page.getByRole('button', { name: 'Send message' }).boundingBox();
+      return box!.y + box!.height;
+    }).toBeLessThanOrEqual(viewport.height);
+    for (const name of ['Settings', 'Send message']) {
+      const box = await page.getByRole('button', { name, exact: true }).boundingBox();
+      expect(box!.width).toBeGreaterThanOrEqual(44); expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await expect(page.getByLabel('Harness', { exact: true })).toBeVisible();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await expect.poll(async () => (await modal.boundingBox())!.width).toBeLessThanOrEqual(viewport.width);
+    await page.getByLabel('Access token', { exact: true }).scrollIntoViewIfNeeded();
+    await page.getByRole('button', { name: 'Save token' }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole('button', { name: 'Save token' })).toBeInViewport();
+    await page.getByRole('button', { name: 'Save token' }).click();
+    await expect(page.getByLabel('Harness', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close settings' }).click();
+  }
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.getByRole('button', { name: /What can you do/ }).click();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('What can you help me with?');
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeFocused();
+});
+
+test('settings cancel discards edits and a stale server edit is reported', async ({ page, request }) => {
+  await open(page); await token(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByLabel('Model', { exact: true }).selectOption('fixture-small:latest');
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue('gpt-oss:20b');
+  const current = (await request.get('/api/settings', { headers: { Authorization: 'Bearer fixture-access' } })).json();
+  const data = await current;
+  await request.put('/api/settings', { headers: { Authorization: 'Bearer fixture-access', 'X-BopBop-Settings': '1' }, data: { harness: data.harness, model: 'fixture-small:latest', profile: data.profile, ollama_context: data.ollama_context, revision: data.revision } });
+  await page.getByRole('button', { name: 'Save agent settings' }).click();
+  await expect(page.getByRole('alert')).toContainText('changed elsewhere');
+  await page.getByRole('button', { name: 'Reload settings' }).click();
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue('fixture-small:latest');
+});
+
+test('visual: server settings sheet at iPhone dimensions', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'light' });
+  await open(page); await token(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByLabel('Harness', { exact: true })).toBeVisible();
+  await expect(page).toHaveScreenshot('settings-light.png', { animations: 'disabled', maxDiffPixelRatio: .003 });
+});
+
+test('visual: all expressions use the CLI character body and load their face overlays', async ({ page }) => {
+  const missing: string[] = [];
+  const poses: { name: string; svg: string }[] = [];
+  page.on('response', response => { if (response.url().includes('/character/') && !response.ok()) missing.push(response.url()); });
+  await open(page); await token(page);
+  for (const emote of EMOTES) {
+    await send(page, `expression ${emote}`);
+    const portrait = page.getByRole('img', { name: `BopBop ${emote}`, exact: true });
+    await expect(portrait).toBeVisible();
+    await expect(portrait.locator('image').first()).toHaveAttribute('href', '/character/body.jpg');
+    if (emote !== 'happy' && emote !== 'idling') {
+      await expect(portrait.locator('image').last()).toHaveAttribute('href', `/character/expressions/${emote}.png`);
+    }
+    poses.push({ name: emote, svg: await portrait.evaluate(el => el.outerHTML) });
+  }
+  expect(missing).toEqual([]);
+  // Review the actual rendered character markup at a readable size. Unique
+  // mask IDs prevent one expression's masks from affecting another portrait.
+  const review = await page.context().newPage();
+  await review.setViewportSize({ width: 960, height: 1020 });
+  await review.setContent(`<base href="${page.url()}"><style>
+    * { box-sizing: border-box; } body { margin: 0; color: #181c2a; background: #edf3fc; font: 16px system-ui; }
+    main { display: grid; grid-template-columns: repeat(5,1fr); gap: 20px; padding: 25px; }
+    section { text-align: center; padding: 10px; background: #ffffff80; border-radius: 16px; }
+    svg { height: 145px; width: 155px; overflow: visible; }
+  </style><main>${poses.map(({ name, svg }, i) => `<section>${svg.replaceAll('pearl-', `pearl-${i}-`)}<p>${name}</p></section>`).join('')}</main>`);
+  await expect(review.locator('main')).toHaveScreenshot('expressions.png', { maxDiffPixelRatio: .003 });
+  await review.close();
 });

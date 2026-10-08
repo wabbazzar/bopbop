@@ -5,6 +5,8 @@
   import { renderMarkdown } from '$lib/markdown';
   import { STORAGE_KEY, restoreHistory, encodeHistory, boundedTrace, type Turn } from '$lib/history';
   import Trace from '$lib/components/Trace.svelte';
+  import Character from '$lib/components/Character.svelte';
+  import Settings from '$lib/components/Settings.svelte';
 
   let draft = $state('');
   let conversationId = $state<string | null>(null);
@@ -19,14 +21,14 @@
   let harness = $state('');
   let requiresToken = $state(false);
   let bearer = $state('');
-  let tokenDraft = $state('');
   let storageWarning = $state('');
   let elapsedMs = $state(0);
   let activity = $state('Thinking');
   let textarea: HTMLTextAreaElement;
   let transcript: HTMLDivElement;
-  let settings: HTMLDetailsElement;
-  let stickBottom = true;
+  let settings: Settings;
+  let keyboard = $state(false);
+  let stickBottom = $state(true);
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let turnAbort: AbortController | undefined;
 
@@ -51,12 +53,13 @@
       const history = restoreHistory(localStorage.getItem(STORAGE_KEY));
       turns = history.turns; conversationId = history.conversationId; draft = history.draft;
     } catch { storageWarning = 'History can’t be saved in this browser. Keep this tab open to keep your conversation.'; }
-    try { bearer = sessionStorage.getItem('bopbop_access_token') ?? ''; tokenDraft = bearer; } catch {}
+    try { bearer = sessionStorage.getItem('bopbop_access_token') ?? ''; } catch {}
     restored = true;
     void checkConnection();
     const updateViewport = () => {
       const vv = window.visualViewport;
       if (!vv) return;
+      keyboard = vv.height < window.innerHeight * .78;
       document.documentElement.style.setProperty('--kbd-viewport-h', `${vv.height}px`);
       document.documentElement.style.setProperty('--kbd-viewport-t', `${vv.offsetTop}px`);
     };
@@ -87,14 +90,14 @@
     void tick().then(() => { if (transcript && stickBottom) transcript.scrollTop = transcript.scrollHeight; });
   });
 
-  function saveToken(e: SubmitEvent) {
-    e.preventDefault(); bearer = tokenDraft.trim();
-    try {
-      if (bearer) sessionStorage.setItem('bopbop_access_token', bearer);
-      else sessionStorage.removeItem('bopbop_access_token');
-    } catch {}
-    settings.open = false;
+  function fillDraft(message: string) { draft = message; textarea?.focus(); }
+  function latest() { stickBottom = true; transcript.scrollTo({ top: transcript.scrollHeight, behavior: 'instant' }); }
+  function fitComposer() {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(128, Math.max(44, textarea.scrollHeight))}px`;
   }
+  $effect(() => { draft; void tick().then(fitComposer); });
   function newChat() {
     if (busy) return;
     turns = []; conversationId = null; draft = ''; emote = 'happy'; stickBottom = true;
@@ -107,7 +110,7 @@
   async function send() {
     const message = draft.trim();
     if (!message || busy || !online) return;
-    if (requiresToken && !bearer) { settings.open = true; return; }
+    if (requiresToken && !bearer) { settings.open(); return; }
     busy = true; draft = ''; emote = 'thinking'; activity = 'Thinking'; elapsedMs = 0;
     clearTimeout(settleTimer); stickBottom = true;
     const id = crypto.randomUUID();
@@ -124,7 +127,10 @@
     turnAbort = new AbortController();
     try {
       for await (const event of streamChat(message, conversationId, bearer || null, turnAbort.signal)) {
-        if (event.kind === 'meta') conversationId = event.conversation_id;
+        if (event.kind === 'meta') {
+          conversationId = event.conversation_id;
+          update(t => ({ ...t, harness: event.agent_harness, model: event.model, profile: event.profile }));
+        }
         else if (event.kind === 'text') append(stripper.feed(event.delta));
         else {
           update(t => ({ ...t, events: [...t.events.slice(-119), boundedTrace(event)],
@@ -149,30 +155,17 @@
 <svelte:head><title>BopBop</title><meta name="description" content="Chat with your personal agent and see its tools at work." /></svelte:head>
 
 <div class="viewport">
-  <main>
+  <main class:conversation={turns.length > 0} class:keyboard>
     <header>
-      <div class="identity"><span class="brand">BopBop</span><span class="connection" class:disconnected={!connected}><i></i>{!online ? 'Offline' : connected ? (model || harness || 'Connected') : checking ? 'Connecting' : 'Server unavailable'}</span></div>
+      <div class="identity"><span class="brand">BopBop<span class="brand-dot">.</span></span><span class="connection" class:disconnected={!connected} title={model || harness}><i></i>{!online ? 'Offline' : connected ? (model || harness || 'Connected') : checking ? 'Connecting' : 'Server unavailable'}</span></div>
       <div class="header-actions">
-        <button class="quiet" onclick={newChat} disabled={busy || !turns.length} title="Start a fresh conversation; clears this device’s transcript">New chat</button>
-        <details class="settings" bind:this={settings}>
-          <summary aria-label="Settings">Settings</summary>
-          <div class="settings-panel">
-            <h2>Connection</h2>
-            <p>{harness ? `Using ${harness}${model ? ` · ${model}` : ''}.` : 'Checking the server.'} Select the harness in your server configuration.</p>
-            <form onsubmit={saveToken}>
-              <label for="access-token">Access token {requiresToken ? '(required)' : '(optional)'}</label>
-              <input id="access-token" type="password" bind:value={tokenDraft} autocomplete="off" spellcheck="false" />
-              <p class="small">Stored for this tab’s session. Never included in saved history.</p>
-              <button class="primary" type="submit">Save token</button>
-            </form>
-            <p class="small">The latest 40 turns and your draft are saved on this device. New chat clears that transcript and starts a fresh agent session.</p>
-          </div>
-        </details>
+        <button class="quiet" onclick={newChat} disabled={busy || !turns.length} title="Start a fresh conversation; clears this device’s transcript"><span aria-hidden="true">＋</span> New chat</button>
+        <button class="quiet settings-button" aria-label="Settings" onclick={() => settings.open()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M9 4v6M15 14v6" /></svg></button>
       </div>
     </header>
     <section class="stage" aria-label="BopBop character">
-      <img src={`/emotes/${emote}.png`} alt={`BopBop ${emote}`} class="stage-blob" fetchpriority="high" />
-      <div class="stage-caption" aria-live="polite">{busy ? activity : 'Here when you need me.'}{#if busy}<span>{(elapsedMs / 1000).toFixed(1)}s</span>{/if}</div>
+      <div class="portrait"><Character {emote} /></div>
+      <div class="stage-caption">{busy ? activity : turns.length ? 'Ready for the next thought.' : 'Here when you need me.'}{#if busy}<span aria-live="off">{(elapsedMs / 1000).toFixed(1)}s</span>{/if}</div>
     </section>
     <section class="chat" aria-label="Conversation">
       {#if !online}<div class="notice" role="status">You’re offline. Saved messages are available; reconnect to send.</div>{/if}
@@ -180,7 +173,7 @@
       {#if storageWarning}<div class="notice" role="status">{storageWarning}</div>{/if}
       <div class="transcript" bind:this={transcript} onscroll={() => { stickBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 48; }}>
         {#if !turns.length}
-          <div class="empty"><h1>What’s on your mind?</h1><p>Ask a question, check a project, or work through an idea.</p></div>
+          <div class="empty"><h1>What’s on your mind?</h1><p>A question, a project, a half-formed idea.<br/>Let’s take it from here.</p><div class="starters"><button onclick={() => fillDraft('What can you help me with?')}>What can you do? <span aria-hidden="true">↗</span></button><button onclick={() => fillDraft('Check the health of my projects.')}>Check project health <span aria-hidden="true">↗</span></button></div></div>
         {/if}
         {#each turns as turn (turn.id)}
           <article class="turn">
@@ -194,56 +187,38 @@
           </article>
         {/each}
       </div>
+      {#if !stickBottom}<button class="jump" onclick={latest}>Latest reply ↓</button>{/if}
       <form class="input-row" onsubmit={e => { e.preventDefault(); void send(); }}>
-        <textarea aria-label="Message" bind:this={textarea} bind:value={draft} onkeydown={onKey} placeholder="Message BopBop…" rows="2" maxlength="20000"></textarea>
-        <button class="primary send" type="submit" disabled={busy || !online || !draft.trim()} aria-label="Send message">Send <span aria-hidden="true">↗</span></button>
+        <textarea aria-label="Message" bind:this={textarea} bind:value={draft} onkeydown={onKey} placeholder="Message BopBop…" rows="1" oninput={fitComposer} maxlength="20000"></textarea>
+        <button class="primary send" type="submit" disabled={busy || !online || !draft.trim()} aria-label="Send message"><span aria-hidden="true">↑</span></button>
       </form>
-      <div class="composer-note">{busy ? 'You can draft your next message while BopBop works.' : 'Ctrl / ⌘ + Enter to send'}<span>Saved on this device</span></div>
+      <div class="composer-note">{busy ? 'You can draft your next message while BopBop works.' : 'Replies may use tools'}<span>{storageWarning ? 'History not saved' : 'Saved on this device'}</span></div>
     </section>
   </main>
 </div>
+<Settings bind:this={settings} bind:bearer {requiresToken} onchanged={() => { void checkConnection(); }} />
 
 <style>
   .viewport { position: fixed; top: var(--kbd-viewport-t, 0); left: 0; right: 0; height: var(--kbd-viewport-h, 100dvh); display: flex; justify-content: center; overflow: hidden; }
-  main { width: 100%; max-width: 760px; height: 100%; display: grid; grid-template-rows: auto minmax(110px, 30%) minmax(0, 1fr); padding: max(env(safe-area-inset-top), 1rem) max(env(safe-area-inset-right), 1rem) max(env(safe-area-inset-bottom), .75rem) max(env(safe-area-inset-left), 1rem); }
-  header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; position: relative; z-index: 3; }
-  .identity { display: grid; gap: .15rem; min-width: 0; }
-  .brand { font: 700 24px/1.1 'Avenir Next', 'Trebuchet MS', system-ui, sans-serif; letter-spacing: -.05em; }
-  .connection { display: flex; align-items: center; gap: .35rem; font: 11px/1.5 ui-monospace, monospace; color: var(--muted); overflow-wrap: anywhere; }
-  .connection i { width: 5px; height: 5px; background: #3c796e; border-radius: 50%; flex: none; }.connection.disconnected i { background: var(--muted); }
-  .header-actions { display: flex; align-items: center; gap: .5rem; flex: none; }
-  button, summary { -webkit-tap-highlight-color: transparent; }
-  button { font: inherit; cursor: pointer; } button:disabled { opacity: .45; cursor: default; }
-  .quiet, .settings > summary { font-size: 12px; color: var(--ink); border: 1px solid var(--line); background: transparent; border-radius: 2rem; padding: .5rem .7rem; min-height: 40px; }
-  .settings > summary { cursor: pointer; list-style: none; }.settings > summary::-webkit-details-marker { display: none; }
-  .settings-panel { position: absolute; top: calc(100% + .7rem); right: 0; width: min(340px, calc(100vw - 2rem)); padding: 1.2rem; background: var(--solid); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 10px 40px #25396625; }
-  .settings-panel h2 { font-size: 16px; margin: 0 0 .5rem; }.settings-panel p { font-size: 13px; margin: .5rem 0 1rem; }.settings-panel .small { font-size: 11px; color: var(--muted); }
-  label { font-size: 12px; display: block; margin-bottom: .35rem; } input { width: 100%; padding: .5rem; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: 16px system-ui; border-radius: .4rem; }
-  .stage { min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; padding: .5rem 0 1.7rem; }
-  .stage-blob { height: 100%; max-width: 80%; object-fit: contain; animation: float 4.2s ease-in-out infinite; filter: drop-shadow(0 8px 20px #5064a022); }
-  .stage-caption { position: absolute; bottom: .25rem; font-size: 12px; color: var(--muted); display: flex; gap: .8rem; }.stage-caption span { font: 11px/1.7 ui-monospace, monospace; }
-  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
-  .chat { min-height: 0; display: flex; flex-direction: column; }.transcript { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: .8rem .15rem .4rem; }
-  .empty { padding: 1.5rem .4rem; text-align: center; }.empty h1 { font: 600 20px 'Avenir Next', 'Trebuchet MS', system-ui; margin: 0 0 .4rem; letter-spacing: -.025em; }.empty p { font-size: 13px; color: var(--muted); margin: 0; }
-  .turn { display: flex; flex-direction: column; gap: .7rem; margin-bottom: 1.25rem; }
-  .bubble { padding: .75rem 1rem; border-radius: 1.05rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; min-width: 0; }
-  .user { align-self: flex-end; max-width: 85%; background: var(--accent); color: #fff; border-bottom-right-radius: .25rem; }
-  .assistant { align-self: flex-start; max-width: 100%; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-bottom-left-radius: .25rem; }
-  .md { white-space: normal; }.md :global(p) { margin: 0 0 .6em; }.md :global(p:last-child) { margin-bottom: 0; }
-  .md :global(ul), .md :global(ol) { padding-left: 1.4em; margin: .3em 0 .6em; }.md :global(li) { margin: .2em 0; }
-  .md :global(pre) { overflow-x: auto; max-width: 100%; padding: .8rem; border-radius: .5rem; background: var(--code); white-space: pre; }
-  .md :global(code) { font: .85em/1.5 ui-monospace, monospace; background: var(--code); padding: .1em .25em; border-radius: .2rem; }.md :global(pre code) { background: none; padding: 0; }
-  .md :global(a) { color: var(--accent-link); text-decoration-thickness: 1px; text-underline-offset: 2px; overflow-wrap: anywhere; }
-  .md :global(blockquote) { border-left: 3px solid var(--accent); margin: .5rem 0; padding-left: .8rem; }
-  .md :global(h1), .md :global(h2), .md :global(h3) { font-size: 1.05em; margin: .75em 0 .3em; }
-  .md :global(table) { display: block; overflow-x: auto; border-collapse: collapse; font-size: 13px; max-width: 100%; }.md :global(th), .md :global(td) { border: 1px solid var(--line); padding: .3rem .5rem; }
-  .working { color: var(--muted); font-size: 12px; padding-left: .2rem; }.dots { letter-spacing: .2rem; }
-  .error, .notice { font-size: 13px; padding: .65rem .8rem; border-radius: .6rem; background: var(--panel); border: 1px solid var(--line); }.error { color: var(--error); }.notice { margin-top: .5rem; }
-  .input-row { display: flex; align-items: stretch; gap: .6rem; margin-top: .3rem; }
-  textarea { min-width: 0; flex: 1; resize: none; padding: .7rem .85rem; border: 1px solid var(--line); border-radius: .9rem; font: 16px/1.4 system-ui, sans-serif; color: var(--ink); background: var(--panel); }
-  .primary { padding: .65rem 1rem; border: 0; border-radius: .7rem; background: var(--accent); color: white; }.send { font-size: 13px; }.send span { margin-left: .25rem; font-size: 16px; }
-  .composer-note { display: flex; justify-content: space-between; gap: .6rem; margin-top: .4rem; color: var(--muted); font-size: 10px; }
-  @media (max-width: 450px) { main { padding-left: .75rem; padding-right: .75rem; }.brand { font-size: 22px; }.composer-note span { display: none; } }
-  @media (max-height: 550px) { main { grid-template-rows: auto minmax(65px, 20%) minmax(0, 1fr); padding-top: .5rem; }.stage-caption { display: none; }.stage { padding-bottom: .3rem; }.composer-note { display: none; } }
-  @media (prefers-reduced-motion: reduce) { .stage-blob { animation: none; } }
+  main { width: 100%; max-width: 760px; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); padding: max(env(safe-area-inset-top), 1rem) max(env(safe-area-inset-right), 1rem) max(env(safe-area-inset-bottom), .8rem) max(env(safe-area-inset-left), 1rem); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .1rem .1rem .6rem; }
+  .identity { display: grid; gap: .2rem; min-width: 0; }.brand { font: 700 26px/1.1 'Avenir Next', 'Trebuchet MS', system-ui, sans-serif; letter-spacing: -.065em; }.brand-dot { color: var(--accent); }
+  .connection { display: flex; align-items: center; gap: .4rem; font: 11px/1.5 ui-monospace, monospace; color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.connection i { width: 5px; height: 5px; background: #3c796e; border-radius: 50%; flex: none; }.disconnected i { background: var(--muted); }
+  .header-actions { display: flex; align-items: center; gap: .45rem; flex: none; }
+  button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; } button:disabled { opacity: .45; cursor: default; }
+  .quiet { min-height: 44px; font-size: 12px; padding: .5rem .8rem; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 2rem; }.quiet span { margin-right: .15rem; }.settings-button { width: 44px; padding: 10px; }.settings-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+  .stage { height: clamp(155px, 24vh, 210px); min-height: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: .7rem; padding: .7rem 0 .8rem; }
+  .portrait { min-height: 0; height: 100%; max-width: 210px; }.stage-caption { color: var(--muted); font-size: 12px; flex: none; display: flex; align-items: center; gap: .7rem; }.stage-caption span { font: 11px ui-monospace, monospace; }
+  main.conversation .stage { height: 88px; flex-direction: row; justify-content: flex-start; padding: .3rem .35rem .65rem; gap: .8rem; }.conversation .portrait { height: 66px; }.conversation .stage-caption { flex-direction: column; align-items: flex-start; gap: .2rem; }
+  .chat { position: relative; min-height: 0; display: flex; flex-direction: column; }.transcript { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: .6rem .15rem .5rem; }
+  .empty { padding: 1.1rem .5rem; text-align: center; }.empty h1 { font: 600 25px/1.2 'Avenir Next', 'Trebuchet MS', system-ui; margin: 0 0 .65rem; letter-spacing: -.035em; }.empty p { font-size: 14px; line-height: 1.6; color: var(--muted); margin: 0; }.starters { display: flex; flex-wrap: wrap; justify-content: center; gap: .55rem; margin: 1.3rem auto 0; }.starters button { min-height: 44px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: .65rem .85rem; border-radius: 1rem; font-size: 12px; }.starters span { margin-left: .3rem; color: var(--muted); }
+  .turn { display: flex; flex-direction: column; gap: .7rem; margin-bottom: 1.25rem; }.bubble { padding: .8rem 1rem; border-radius: 1.1rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; min-width: 0; }.user { align-self: flex-end; max-width: 85%; background: var(--accent); color: #fff; border-bottom-right-radius: .3rem; }.assistant { align-self: flex-start; max-width: 100%; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-bottom-left-radius: .3rem; }
+  .md { white-space: normal; }.md :global(p) { margin: 0 0 .6em; }.md :global(p:last-child) { margin-bottom: 0; }.md :global(ul), .md :global(ol) { padding-left: 1.4em; margin: .3em 0 .6em; }.md :global(li) { margin: .2em 0; }.md :global(pre) { overflow-x: auto; max-width: 100%; padding: .8rem; border-radius: .5rem; background: var(--code); white-space: pre; }.md :global(code) { font: .85em/1.5 ui-monospace, monospace; background: var(--code); padding: .1em .25em; border-radius: .2rem; }.md :global(pre code) { background: none; padding: 0; }.md :global(a) { color: var(--accent-link); text-decoration-thickness: 1px; text-underline-offset: 2px; overflow-wrap: anywhere; }.md :global(blockquote) { border-left: 3px solid var(--accent); margin: .5rem 0; padding-left: .8rem; }.md :global(h1), .md :global(h2), .md :global(h3) { font-size: 1.05em; margin: .75em 0 .3em; }.md :global(table) { display: block; overflow-x: auto; border-collapse: collapse; font-size: 13px; max-width: 100%; }.md :global(th), .md :global(td) { border: 1px solid var(--line); padding: .3rem .5rem; }
+  .working { color: var(--muted); font-size: 12px; padding-left: .2rem; }.dots { letter-spacing: .2rem; }.error, .notice { font-size: 13px; padding: .65rem .8rem; border-radius: .6rem; background: var(--panel); border: 1px solid var(--line); }.error { color: var(--error); }.notice { margin-top: .5rem; }
+  .input-row { display: flex; align-items: flex-end; gap: .5rem; background: var(--solid); padding: .35rem; margin-top: .3rem; border: 1px solid var(--line); border-radius: 1.2rem; box-shadow: 0 4px 20px #233b6010; flex: none; }.input-row:focus-within { border-color: var(--accent); }
+  textarea { min-width: 0; flex: 1; resize: none; padding: .65rem .55rem; min-height: 44px; max-height: 128px; border: 0; border-radius: .7rem; font: 16px/1.4 system-ui, sans-serif; color: var(--ink); background: transparent; } textarea:focus { outline: none; }.primary { width: 44px; height: 44px; flex: none; padding: 0; border: 0; border-radius: 50%; background: var(--accent); color: white; }.send span { font-size: 23px; line-height: 1; }.composer-note { display: flex; justify-content: space-between; gap: .6rem; margin: .45rem .35rem 0; color: var(--muted); font-size: 10px; }
+  .jump { position: absolute; bottom: 95px; left: 50%; transform: translateX(-50%); padding: .5rem 1rem; border: 1px solid var(--line); border-radius: 2rem; background: var(--solid); color: var(--ink); font-size: 12px; min-height: 44px; box-shadow: 0 4px 18px #1c2b5320; }
+  @media(max-width: 450px) { main { padding-left: .8rem; padding-right: .8rem; }.brand { font-size: 25px; }.connection { max-width: 180px; } }
+  @media(max-height: 550px) { main { padding-top: .35rem; }.stage, main.conversation .stage { height: 54px; flex-direction: row; padding: .1rem .35rem; justify-content: flex-start; }.portrait, main.conversation .portrait { height: 45px; }.empty { padding: .6rem .3rem; }.empty h1 { font-size: 20px; }.starters { margin-top: .6rem; }.composer-note { display: none; } }
+  main.keyboard .stage { height: 48px; padding: .1rem .35rem; flex-direction: row; justify-content: flex-start; } main.keyboard .portrait { height: 42px; }
 </style>

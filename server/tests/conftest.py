@@ -8,6 +8,12 @@ import pytest
 import db as _db
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Tests never read or change the installed service's preferences."""
+    monkeypatch.setenv("BOPBOP_SETTINGS_PATH", str(tmp_path / "agent-settings.json"))
+
+
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     """Point db at a throwaway sqlite file and initialize the schema."""

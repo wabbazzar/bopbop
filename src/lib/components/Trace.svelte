@@ -29,6 +29,9 @@
   </summary>
   <div class="trace-body">
     <dl class="totals">
+      {#if turn.harness}<div><dt>Harness</dt><dd>{turn.harness}</dd></div>{/if}
+      {#if turn.model}<div><dt>Model</dt><dd>{turn.model === 'default' ? 'Installation default' : turn.model}</dd></div>{/if}
+      {#if turn.profile}<div><dt>Context pack</dt><dd>{turn.profile}</dd></div>{/if}
       <div><dt>First visible text</dt><dd>{ms(turn.firstTextMs)}</dd></div>
       <div><dt>Browser round trip</dt><dd>{ms(elapsedMs)}</dd></div>
       {#if done?.kind === 'done' && done.duration_ms !== undefined}

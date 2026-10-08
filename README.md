@@ -73,10 +73,14 @@ bin/bopbop web build|dev|test   optional PWA build, local development, browser g
 
 The shell alias `bopbop` points to `bin/bopbop`, so these commands work from
 any directory after opening a new shell or running `source ~/.bashrc`.
-`bopbop run` and the Signal service use `BOPBOP_AGENT_HARNESS` in
-`~/.bopbop/env`. Changing that value to `claude`, `codex`, or `ollama` and
-restarting `bopbop.service` switches the service backend. Changing harnesses
-starts a fresh agent session for each conversation.
+`bopbop run` and the Signal service default to `BOPBOP_AGENT_HARNESS` in
+`~/.bopbop/env`. The browser app's **Settings** can override the server harness,
+model, context pack, and local context size without a restart. Saved preferences
+in `~/.bopbop/data/agent-settings.json` take precedence over those env defaults;
+remove that file to return to env configuration. `bopbop doctor` checks the
+effective selection. Terminal `bopbop local` / `bopbop agent` continue to use
+their CLI arguments and env settings. Changing the server harness, model, pack,
+or context size starts a fresh agent session for each conversation.
 
 ### Local Ollama agent
 
@@ -242,14 +246,14 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 | `SIGNAL_HTTP_URL` | `http://127.0.0.1:8080` | signal-cli-rest-api |
 | `SIGNAL_ACCOUNT` | — | your number, E.164 |
 | `SIGNAL_ALLOWED_USERS` | — | comma-separated allowlist (required) |
-| `BOPBOP_REQUIRE_BEARER` | `0` | gate `/api/chat` with a bearer token |
+| `BOPBOP_REQUIRE_BEARER` | `0` | gate chat and settings with a bearer token |
 | `BOPBOP_PWA_ENABLED` | `0` | serve the optional app after `bopbop web build` |
 
 ## Niceties
 
 - **Session warmth**: consecutive messages resume the same harness-specific
   session (1h idle window or 20 turns, whichever lasts longer), so "and what
-  about the second one?" works. Switching harnesses starts fresh; `/reset`
+  about the second one?" works. Switching harness/model/pack/context starts fresh; `/reset`
   also starts fresh.
 - **Attachments**: send a photo; the local attachment path is included for the
   selected agent to inspect.
@@ -263,7 +267,8 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 ## Browser app (PWA)
 
 The optional Svelte app shares the server's configured Claude, Codex, or Ollama
-harness and installed context packs. It keeps the original character expressions,
+harness and installed context packs. It uses the CLI's Pearl character cutout
+with aligned expressions,
 streams Markdown replies, saves a rolling transcript and draft on your device,
 and shows expandable tool calls, token counts, and timing measurements.
 
@@ -280,6 +285,14 @@ For phone access, use your existing trusted HTTPS private-network/proxy setup.
 With `BOPBOP_REQUIRE_BEARER=1`, enter the access token in the app's Settings;
 it stays in tab session storage, separate from saved history. The offline shell
 shows saved messages but cannot run the agent without the server.
+
+Open **Settings** to choose Claude Code, Codex, or local Ollama; select an
+installed local model, a native context pack, and the local context size. For
+wrapper harnesses, enter a supported model ID or leave it blank for the
+installation default. Changes persist across restarts and apply to new browser
+and Signal turns. Running replies retain their original configuration. The
+phone layout has a scrollable settings sheet, 44px controls, an expanding
+composer, and a compact character during conversations.
 
 Development: `bopbop web dev` (loopback Vite server, API proxied to port 8090).
 Verification: install Python test dependencies, run

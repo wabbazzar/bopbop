@@ -30,10 +30,10 @@ replace it with a timestamp recalculated inside `svelte.config.js`.
 
 `bopbop web dev` binds Vite to loopback and proxies `/api` to the server on 8090.
 `npm run preview` previews static output only; use the Python server for the API.
-No frontend code sets the harness or Ice profile. Configure
-`BOPBOP_AGENT_HARNESS=claude|codex|ollama` and, if desired,
-`BOPBOP_AGENT_PROFILE=ice` on the server, then restart it. Switching harnesses
-starts a new agent session using the existing server routing.
+Server env values initialize the harness, model, pack profile and local context
+size. Use the app's **Settings** to change these values live; see below for
+persistence and session behavior. Terminal interactive commands still use
+their own arguments/env, independently of browser preferences.
 
 Phone installation/offline support requires a secure browser context (HTTPS,
 except for localhost). Use your existing trusted private-network HTTPS proxy;
@@ -45,8 +45,19 @@ URLs, build output, or offline cache. Re-enter it in another tab/device.
 
 ## Interface and data
 
-- Original sky blue/lavender palette, indigo dark mode, and 17 character
-  expressions. `<emote>NAME</emote>` is parsed across streamed chunk boundaries.
+- Sky blue/lavender palette and indigo dark mode. The character uses the same
+  clipped Pearl body as `assets/cli/pearl.svg`, with the CLI's laughing/wink face
+  sources and alignment. All 17 expressions place face overlays on this shared
+  body, replacing rectangular expression cards. The body JPEG is extracted
+  unchanged from the SVG; other face sources retain the original expression
+  artwork. `Character.svelte` owns the clip and feathered masks, while
+  `static/character/` holds shared rasters. `<emote>NAME</emote>` is parsed across
+  streamed chunk boundaries.
+- Pearl shrinks during conversations to give answers more space. Starter buttons
+  fill a draft, the composer expands for multiline text, and a Latest reply
+  button appears while reading older messages. Primary phone controls have
+  44px touch targets. Settings is a native modal dialog with a fixed close
+  button and one internally scrolling form; desktop uses a centered dialog.
 - Text and Markdown answers, with parsed-DOM sanitization (DOMPurify). Scripts,
   images, SVG, forms, styles, event handlers, and unsafe link protocols are removed.
 - Ctrl/Cmd+Enter sends; plain Enter creates a new line. Drafting remains available
@@ -71,6 +82,44 @@ URLs, build output, or offline cache. Re-enter it in another tab/device.
   lines, HTTP errors, and streams missing a terminal event fail visibly. A failed
   turn can retain partial text; it isn't silently treated as a completed answer.
 
+## Server settings
+
+The Agent section selects an installed harness, model, native pack profile
+(or General agent), and Ollama context size. Local models come from the
+server's [Ollama model catalog](https://docs.ollama.com/api/tags); selection never
+pulls a model. Reload models refreshes the list. Wrapper model IDs are checked
+for safe argument syntax; availability is determined by that wrapper when a
+turn runs. Only valid installed native pack profiles appear in the selector.
+
+Preferences are written atomically with mode `0600` to
+`$BOPBOP_DATA_DIR/agent-settings.json` (normally `~/.bopbop/data/`). An optional
+`BOPBOP_SETTINGS_PATH` overrides the path. The file remembers a model per harness
+and overrides env defaults once saved. It contains no credentials. Remove it
+to restore env defaults. `bopbop doctor` uses this effective configuration.
+Changing credentials, executable paths, network endpoints or workspace
+authority remains an installation task; the app edits only agent preferences.
+
+Saved settings apply to **new browser and Signal turns**, without restarting.
+Each turn captures a frozen configuration before routing/invocation. Changing
+the harness, model, pack or context size invalidates the resumed agent session
+for that conversation; displayed browser history remains. Older sessions from
+before this upgrade start fresh once because they have no configuration key.
+
+API contract:
+
+- `GET /api/settings` returns effective preferences, remembered models,
+  installed harnesses/profiles, local models and catalog availability. It uses
+  the existing bearer gate when enabled and never returns secrets.
+- `PUT /api/settings` accepts `harness`, `model`, `profile`, `ollama_context`,
+  and the `revision` from GET. Send `X-BopBop-Settings: 1`, JSON content type,
+  and the bearer token when required. Browser writes must originate from this
+  app; another origin is rejected. There is no cross-origin CORS permission.
+- A stale revision returns `409` and the sheet offers Reload settings. Invalid
+  selections return `422`; unavailable Ollama or an unreadable/unsavable
+  configuration returns `503`. Failed writes preserve the last valid file.
+  Authentication failures ask for the tab's access token. Settings API requests
+  are never cached offline.
+
 ## Agent trace
 
 The expandable trace keeps raw arguments and bounded tool result previews out
@@ -81,6 +130,8 @@ supply their names and richer measurements.
 Wrapper tool durations measure the interval between the runner receiving a call
 and its result, and result previews are bounded to 8,000 characters before being
 sent to the browser. They are not independent API-request timings.
+Each turn's trace records its captured harness, model and pack, so later settings
+changes cannot relabel an older reply.
 
 | Measurement | Meaning |
 |---|---|
@@ -127,9 +178,16 @@ Tests cover hydration, Markdown/emotes, API round trip, reload and true session
 resume, draft persistence, new chat, token rejection/recovery, partial results,
 tool failure, interrupted streams, script/URL sanitization, small/keyboard-sized
 viewports, reduced motion, manifest/icons, offline reload and API cache exclusion.
+Settings gates cover persistence, model/profile selection reaching the next
+turn, session invalidation, canceled edits, stale saves, and changes while a
+reply runs. All 17 face overlays are exercised through streamed emote tags.
 Projects cover desktop Chromium, mobile Chromium, and mobile WebKit.
+Dimension checks include iPhone SE (375×667), 13 (390×844), 15 (393×852),
+Pro Max (430×932), and a keyboard-sized 393×340 viewport, including form
+scrolling and touch target sizes. These are emulations, not hardware testing.
 
-Screenshot baselines cover empty/chat states, expanded trace, and light/dark
+Screenshot baselines cover empty/chat states, expanded trace, the settings sheet,
+an expression contact sheet, and light/dark
 palettes. They mask live timing values. Establish/update them with
 `npm run test:visual:update`, inspect the PNGs, then run `npm run test:e2e` without
 updates. Do not regenerate baselines to bypass a rendering failure. CI runs all

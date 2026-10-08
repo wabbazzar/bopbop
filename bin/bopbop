@@ -129,6 +129,20 @@ cmd_doctor() {
         fail "context dir missing CLAUDE.md ($ctx) — run: bopbop init"
     fi
     local harness="${BOPBOP_AGENT_HARNESS:-claude}"
+    local selected_model="${BOPBOP_OLLAMA_MODEL:-gpt-oss:20b}" effective
+    # Browser preferences override env defaults for every server channel.
+    # Read through the server validator so doctor checks the effective backend.
+    if [[ -x "$REPO_DIR/server/.venv/bin/python" ]]; then
+        if effective=$(PYTHONPATH="$REPO_DIR/server" "$REPO_DIR/server/.venv/bin/python" -c 'import settings; c=settings.snapshot(); print(c.harness); print(c.model)' 2>/dev/null); then
+            local -a agent_config
+            mapfile -t agent_config <<< "$effective"
+            harness="${agent_config[0]}"
+            selected_model="${agent_config[1]:-}"
+            pass "effective server harness: $harness${selected_model:+ · $selected_model}"
+        else
+            fail "agent settings invalid or unreadable — check env and data/agent-settings.json"
+        fi
+    fi
     if [[ "$harness" == "codex" ]]; then
         if [[ -f "$ctx/AGENTS.md" ]]; then
             pass "Codex context has AGENTS.md ($ctx)"
@@ -171,7 +185,7 @@ cmd_doctor() {
         ollama)
             agent_bin=""
             local ollama_url="${BOPBOP_OLLAMA_HOST:-http://127.0.0.1:11434}"
-            local ollama_model="${BOPBOP_OLLAMA_MODEL:-gpt-oss:20b}"
+            local ollama_model="$selected_model"
             if curl -fsS --max-time 5 "$ollama_url/api/tags" | python3 -c 'import json,sys; model=sys.argv[1]; names={m.get("name") for m in json.load(sys.stdin).get("models", [])}; sys.exit(0 if model in names else 1)' "$ollama_model"; then
                 pass "Ollama reachable; $ollama_model installed"
             else

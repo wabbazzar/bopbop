@@ -13,6 +13,8 @@ import json
 import os
 import time
 import sys
+
+import settings
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -23,7 +25,7 @@ SUPPORTED_HARNESSES = {"claude", "codex", "ollama"}
 
 
 def agent_harness() -> str:
-    harness = os.environ.get("BOPBOP_AGENT_HARNESS", "claude").strip().lower()
+    harness = settings.current().harness
     if harness not in SUPPORTED_HARNESSES:
         raise ValueError(
             f"unsupported BOPBOP_AGENT_HARNESS={harness!r}; "
@@ -33,28 +35,26 @@ def agent_harness() -> str:
 
 
 def agent_model(harness: str | None = None) -> str | None:
-    harness = harness or agent_harness()
-    if harness == "codex":
-        # Empty means "use the authenticated Codex installation's default".
-        return os.environ.get("BOPBOP_CODEX_MODEL", "").strip() or None
-    if harness == "ollama":
-        return os.environ.get("BOPBOP_OLLAMA_MODEL", "gpt-oss:20b").strip() or "gpt-oss:20b"
-    return os.environ.get("BOPBOP_CLAUDE_MODEL", "sonnet").strip() or "sonnet"
+    config = settings.current()
+    harness = harness or config.harness
+    model = config.model if harness == config.harness else settings.load().models[harness]
+    return model or None
 
 
 def _build_args(
     prompt: str, resume_session_id: str | None = None
 ) -> tuple[str, list[str]]:
-    harness = agent_harness()
-    model = agent_model(harness)
+    config = settings.current()
+    harness = config.harness
+    model = config.model or None
 
     if harness == "ollama":
         binary = os.environ.get("BOPBOP_PYTHON_BIN", "python3")
         script = str(Path(__file__).resolve().parent.parent / "bin" / "bopbop-local.py")
         args = [binary, script, "--jsonl", "--workspace", CONTEXT_DIR,
                 "--model", model or "gpt-oss:20b", "--context",
-                os.environ.get("BOPBOP_OLLAMA_CONTEXT", "16384")]
-        profile = os.environ.get("BOPBOP_AGENT_PROFILE", "").strip()
+                str(config.ollama_context)]
+        profile = config.profile
         if profile:
             args.extend(["--profile", profile, "--context-dir", CONTEXT_DIR])
         if resume_session_id:
@@ -94,7 +94,7 @@ def _build_args(
             args.extend(["--model", model])
         if resume_session_id:
             args.append(resume_session_id)
-        profile = os.environ.get("BOPBOP_AGENT_PROFILE", "").strip()
+        profile = config.profile
         if profile:
             sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
             from bopbop_packs import wrapper_options
@@ -106,17 +106,17 @@ def _build_args(
     args = [
         binary,
         "-p",
-        "--model",
-        model or "sonnet",
         "--dangerously-skip-permissions",
         "--output-format",
         "stream-json",
         "--verbose",
     ]
+    if model:
+        args[2:2] = ["--model", model]
     if resume_session_id:
         args.extend(["--resume", resume_session_id])
     args.append(prompt)
-    profile = os.environ.get("BOPBOP_AGENT_PROFILE", "").strip()
+    profile = config.profile
     if profile:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
         from bopbop_packs import wrapper_options

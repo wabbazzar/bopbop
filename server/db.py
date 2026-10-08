@@ -75,6 +75,8 @@ def init_db() -> None:
                 "ALTER TABLE conversations "
                 "ADD COLUMN claude_session_created_at INTEGER"
             )
+        if "agent_config_key" not in existing_cols:
+            c.execute("ALTER TABLE conversations ADD COLUMN agent_config_key TEXT")
         if "agent_harness" not in existing_cols:
             c.execute("ALTER TABLE conversations ADD COLUMN agent_harness TEXT")
 
@@ -199,7 +201,7 @@ def get_unseen_pushes(
 
 
 def get_active_agent_session(
-    conversation_id: str, harness: str = "claude"
+    conversation_id: str, harness: str = "claude", config_key: str | None = None
 ) -> str | None:
     """Return a warm session only when it belongs to the selected harness.
 
@@ -209,13 +211,15 @@ def get_active_agent_session(
     with _conn() as c:
         row = c.execute(
             "SELECT claude_session_id, claude_session_active_at, "
-            "       claude_session_created_at, agent_harness "
+            "       claude_session_created_at, agent_harness, agent_config_key "
             "FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
         if not row or not row["claude_session_id"]:
             return None
         stored_harness = row["agent_harness"] or "claude"
+        if config_key is not None and row["agent_config_key"] != config_key:
+            return None
         if stored_harness != harness:
             return None
         idle = int(time.time()) - (row["claude_session_active_at"] or 0)
@@ -234,13 +238,13 @@ def get_active_agent_session(
 
 
 def set_active_agent_session(
-    conversation_id: str, session_id: str, harness: str = "claude"
+    conversation_id: str, session_id: str, harness: str = "claude", config_key: str | None = None
 ) -> None:
     """Persist an agent session id together with the harness that owns it."""
     now = int(time.time())
     with _conn() as c:
         row = c.execute(
-            "SELECT claude_session_id, agent_harness "
+            "SELECT claude_session_id, agent_harness, agent_config_key "
             "FROM conversations WHERE id = ?",
             (conversation_id,),
         ).fetchone()
@@ -249,20 +253,21 @@ def set_active_agent_session(
             row
             and row["claude_session_id"] == session_id
             and stored_harness == harness
+            and row["agent_config_key"] == config_key
         ):
             c.execute(
                 "UPDATE conversations SET claude_session_active_at = ?, "
-                "agent_harness = ? "
+                "agent_harness = ?, agent_config_key = ? "
                 "WHERE id = ?",
-                (now, harness, conversation_id),
+                (now, harness, config_key, conversation_id),
             )
         else:
             c.execute(
                 "UPDATE conversations SET claude_session_id = ?, "
                 "claude_session_created_at = ?, claude_session_active_at = ?, "
-                "agent_harness = ? "
+                "agent_harness = ?, agent_config_key = ? "
                 "WHERE id = ?",
-                (session_id, now, now, harness, conversation_id),
+                (session_id, now, now, harness, config_key, conversation_id),
             )
 
 

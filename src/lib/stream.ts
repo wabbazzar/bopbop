@@ -4,7 +4,7 @@ export type Usage = {
   cache_read_input_tokens?: number;
 };
 export type ChatEvent =
-  | { kind: 'meta'; conversation_id: string }
+  | { kind: 'meta'; conversation_id: string; agent_harness?: string; model?: string; profile?: string }
   | { kind: 'text'; delta: string }
   | { kind: 'tool'; name: string; args: unknown; id?: string }
   | { kind: 'tool_result'; name: string; ok: boolean; id?: string; preview?: string;

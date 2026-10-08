@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import db
+import settings
 from runner import agent_harness, agent_model, run_turn
 
 # Auth model: BopBop binds to 127.0.0.1 and is designed to sit behind a
@@ -71,32 +73,44 @@ def _auth(authorization: str | None) -> None:
         raise HTTPException(401, "Invalid bearer token")
 
 
+def _configuration():
+    try:
+        return settings.snapshot()
+    except (ValueError, OSError):
+        raise HTTPException(503, "Saved agent settings could not be read. Check the server configuration.")
+
+
 @app.post("/api/chat")
 async def chat(req: ChatReq, authorization: str | None = Header(None)):
     _auth(authorization)
+    config = _configuration()
 
     cid = req.conversation_id or db.new_conversation("pwa")
     db.add_message(cid, "user", req.message)
     prompt = "[channel: pwa]\n\n" + req.message
-    harness = agent_harness()
-    resume_id = db.get_active_agent_session(cid, harness)
+    with settings.use(config):
+        harness = agent_harness()
+    resume_id = db.get_active_agent_session(cid, harness, config.session_key)
 
     async def stream():
-        yield json.dumps({"kind": "meta", "conversation_id": cid}) + "\n"
+        yield json.dumps({"kind": "meta", "conversation_id": cid,
+                         "agent_harness": harness, "model": config.model or "default",
+                         "profile": config.profile}) + "\n"
 
         full_text: list[str] = []
         new_session_id: str | None = None
-        async for ev in run_turn(prompt, resume_session_id=resume_id):
-            kind = ev.get("kind")
-            if kind == "session":
-                new_session_id = ev.get("session_id")
-                continue  # internal — don't surface session ids to the client
-            if kind == "text":
-                full_text.append(ev["delta"])
-            yield json.dumps(ev) + "\n"
+        with settings.use(config):
+            async for ev in run_turn(prompt, resume_session_id=resume_id):
+                kind = ev.get("kind")
+                if kind == "session":
+                    new_session_id = ev.get("session_id")
+                    continue  # internal — don't surface session ids to the client
+                if kind == "text":
+                    full_text.append(ev["delta"])
+                yield json.dumps(ev) + "\n"
 
         if new_session_id:
-            db.set_active_agent_session(cid, new_session_id, harness)
+            db.set_active_agent_session(cid, new_session_id, harness, config.session_key)
         if full_text:
             db.add_message(cid, "assistant", "".join(full_text))
 
@@ -149,12 +163,14 @@ async def signal_inject(req: InjectReq, request: Request):
 
 @app.get("/api/health")
 def health():
-    harness = agent_harness()
+    with settings.use(_configuration()):
+        harness = agent_harness()
+        model = agent_model(harness) or "default"
     return {
         "ok": True,
         "context_dir": os.environ.get("BOPBOP_CONTEXT_DIR"),
         "agent_harness": harness,
-        "model": agent_model(harness) or "default",
+        "model": model,
         "signal_enabled": os.environ.get("BOPBOP_SIGNAL_ENABLED") == "1",
         "signal_account": os.environ.get("SIGNAL_ACCOUNT"),
         "require_bearer": REQUIRE_BEARER,
@@ -164,13 +180,67 @@ def health():
 @app.get("/api/client")
 def client_config():
     """Browser connection metadata; no context paths, account IDs, or secrets."""
-    harness = agent_harness()
+    with settings.use(_configuration()):
+        harness = agent_harness()
+        model = agent_model(harness) or "default"
     return {
         "ok": True,
         "agent_harness": harness,
-        "model": agent_model(harness) or "default",
+        "model": model,
         "require_bearer": REQUIRE_BEARER,
     }
+
+
+@app.get("/api/settings")
+async def get_settings(authorization: str | None = Header(None)):
+    _auth(authorization)
+    try:
+        config = settings.public(settings.load())
+    except (ValueError, OSError):
+        raise HTTPException(503, "Saved agent settings could not be read. Check the server configuration.")
+    try:
+        models = await settings.local_models()
+        model_error = None
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        models = []
+        model_error = "Ollama is unavailable. Start it and reload models."
+    return {
+        **config, "harnesses": settings.available_harnesses(),
+        "local_models": models, "local_model_error": model_error,
+        "profiles": settings.profiles(),
+    }
+
+
+@app.put("/api/settings")
+async def update_settings(
+    change: settings.SettingsChange, request: Request,
+    authorization: str | None = Header(None),
+):
+    _auth(authorization)
+    # Browser writes must be same-origin and carry a custom header. There is
+    # no CORS permission for another origin to preflight this header.
+    origin = request.headers.get("origin")
+    expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if request.headers.get("x-bopbop-settings") != "1" or (origin and origin != expected_origin):
+        raise HTTPException(403, "Settings must be changed from this app.")
+    if not any(h['id'] == change.harness and h['available'] for h in settings.available_harnesses()):
+        raise HTTPException(422, "That harness is not installed on the server.")
+    if change.profile and change.profile not in {p['id'] for p in settings.profiles()}:
+        raise HTTPException(422, "That pack profile is not installed.")
+    if change.harness == 'ollama':
+        try:
+            models = await settings.local_models()
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            raise HTTPException(503, "Ollama is unavailable. Start it and reload models.")
+        if change.model not in models:
+            raise HTTPException(422, "Select a model already installed in Ollama.")
+    try:
+        updated = settings.save(change)
+    except settings.SettingsConflict as error:
+        raise HTTPException(409, str(error))
+    except (OSError, ValueError):
+        raise HTTPException(503, "Settings could not be saved. Check the server configuration.")
+    return {**settings.public(updated), "ok": True}
 
 
 # HTTP middleware that disables caching for the PWA shell + service

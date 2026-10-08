@@ -4,6 +4,7 @@ export type Turn = {
   id: string; user: string; answer: string; events: TraceEvent[];
   status: 'running' | 'done' | 'error'; elapsedMs: number;
   firstTextMs?: number; startedAt: number;
+  harness?: string; model?: string; profile?: string;
 };
 export type History = { conversationId: string | null; turns: Turn[]; draft: string };
 

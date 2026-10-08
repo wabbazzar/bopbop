@@ -18,12 +18,28 @@ with tempfile.TemporaryDirectory(prefix='bopbop-pwa-test-') as data_dir:
         'BOPBOP_REQUIRE_BEARER': '1', 'BOPBOP_BEARER_TOKEN': 'fixture-access',
         'BOPBOP_CONTEXT_DIR': data_dir, 'BOPBOP_AGENT_PROFILE': '',
     })
+    os.environ['BOPBOP_SETTINGS_PATH'] = str(Path(data_dir) / 'agent-settings.json')
     import main
+    import settings
     import uvicorn
+
+    async def local_models(): return ['gpt-oss:20b', 'fixture-small:latest']
+    settings.local_models = local_models
+    settings.available_harnesses = lambda: [{'id': h, 'available': True} for h in settings.HARNESSES]
+    settings.profiles = lambda: [{'id': 'ice', 'name': 'ice-dashboard'}]
+
+    @main.app.post('/api/fixture/reset')
+    def reset_preferences():
+        settings.settings_path().unlink(missing_ok=True)
+        return {'ok': True}
+
+    # The production static mount is a catch-all; this test-only route must
+    # precede it. Verify the reset response in the browser suite as well.
+    main.app.router.routes.insert(0, main.app.router.routes.pop())
 
     async def fake_turn(prompt, resume_session_id=None):
         yield {'kind': 'session', 'session_id': resume_session_id or 'fixture-agent-session'}
-        await asyncio.sleep(.04)
+        await asyncio.sleep(1 if 'slow reply' in prompt else .04)
         if 'interrupt stream' in prompt:
             yield {'kind': 'text', 'delta': 'Partial reply'}
             return
@@ -34,6 +50,12 @@ with tempfile.TemporaryDirectory(prefix='bopbop-pwa-test-') as data_dir:
             return
         if 'unsafe markdown' in prompt:
             yield {'kind': 'text', 'delta': '<emote>happy</emote>**Safe** <img src=x onerror="window.pwned=1"><svg onload="window.pwned=1"></svg><script>window.pwned=1</script> [bad](javascript:alert(1)) [good](https://example.com)'}
+        elif 'expression ' in prompt:
+            name = prompt.rsplit('expression ', 1)[1].strip()
+            yield {'kind': 'text', 'delta': f'<emote>{name}</emote>Expression: {name}'}
+        elif 'configuration check' in prompt:
+            config = settings.current()
+            yield {'kind': 'text', 'delta': f"{config.harness} / {config.model} / {config.profile or 'general'} / {config.ollama_context}"}
         elif 'resume check' in prompt:
             yield {'kind': 'text', 'delta': 'Session resumed.' if resume_session_id else 'Fresh session.'}
         else:

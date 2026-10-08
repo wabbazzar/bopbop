@@ -43,6 +43,7 @@ ATTACHMENTS_DIR = (
 from runner import agent_harness, run_turn
 from detectors import scan_inbound, scan_outbound
 import db
+import settings
 
 # Optional telemetry hook: if the context dir ships lib/events.py with a
 # log_event() function, message.in/out events flow into it. Absent = no-op.
@@ -641,8 +642,10 @@ async def run() -> None:
                 ) + "]"
             db.add_message(cid, "user", db_text)
 
-            harness = agent_harness()
-            resume_id = db.get_active_agent_session(cid, harness)
+            config = settings.snapshot()
+            with settings.use(config):
+                harness = agent_harness()
+            resume_id = db.get_active_agent_session(cid, harness, config.session_key)
             # Out-of-band messages (notify.sh alerts, etc.) that hit this thread
             # since the last turn — the resumed session hasn't seen them, so the
             # user could be replying to one. Surface them in the prompt.
@@ -653,11 +656,12 @@ async def run() -> None:
                 prompt = _compose_prompt(
                     text, attachment_paths, thread_context=pushes, quote=quote
                 )
-                reply, new_session_id = await _run_agent(
-                    prompt, resume_session_id=resume_id
-                )
+                with settings.use(config):
+                    reply, new_session_id = await _run_agent(
+                        prompt, resume_session_id=resume_id
+                    )
                 if new_session_id:
-                    db.set_active_agent_session(cid, new_session_id, harness)
+                    db.set_active_agent_session(cid, new_session_id, harness, config.session_key)
                 await _stop_typing()
                 for detector, reason in scan_outbound(reply):
                     log_event(
