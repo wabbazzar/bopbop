@@ -1,0 +1,5 @@
+name = "ice-dashboard"
+profile = "ice"
+description = "Read-only Ice dashboard facts, project health, public usage and security explanations"
+fragment = "CLAUDE.fragment.md"
+tools = "tools.json"

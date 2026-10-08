@@ -33,11 +33,21 @@ context_dir() {
     printf '%s' "${ctx/#\~/$HOME}"
 }
 
-# Read one flat `key = "value"` entry from a pack.toml.
-toml_get() { # toml_get <file> <key> — empty (exit 0) when the key is absent
-    grep -E "^${2}[[:space:]]*=" "$1" 2>/dev/null | head -1 \
-        | sed -E 's/^[^=]+=[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/' || true
+# Read flat TOML string metadata using the same parser as native validation.
+toml_get() { # toml_get <file> <key> — empty when an optional key is absent
+    python3 - "$1" "$2" <<'PY_METADATA'
+import sys, tomllib
+with open(sys.argv[1], "rb") as file:
+    raw = file.read(65537)
+if len(raw) > 65536:
+    raise ValueError("pack manifest exceeds 64 KB")
+value = tomllib.loads(raw.decode()).get(sys.argv[2], "")
+if not isinstance(value, str):
+    raise ValueError("pack metadata must use flat string values")
+print(value)
+PY_METADATA
 }
+
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAILURES=$((FAILURES+1)); }
 warn() { printf '  \033[33mWARN\033[0m %s\n' "$*"; }
@@ -131,6 +141,11 @@ cmd_doctor() {
     for t in "$ctx"/packs/*/pack.toml; do
         [[ -f "$t" ]] || continue
         pname=$(toml_get "$t" name)
+        if python3 "$REPO_DIR/bin/bopbop-pack.py" validate "${t%/*}" >/dev/null; then
+            pass "pack '$pname' manifest and native tools valid"
+        else
+            fail "pack '$pname' manifest or native tools invalid"
+        fi
         preq=$(toml_get "$t" required_env)
         missing=""
         if [[ -n "$preq" ]]; then
@@ -261,6 +276,8 @@ cmd_pack_install() {
     local pdir="$tmp"
     [[ -f "$pdir/pack.toml" ]] || pdir="$tmp/pack"
     [[ -f "$pdir/pack.toml" ]] || { note "no pack.toml found in $src (looked at root and pack/)"; exit 1; }
+    # Validate paths, handlers and schemas before replacing an installed pack.
+    python3 "$REPO_DIR/bin/bopbop-pack.py" validate "$pdir" >/dev/null
 
     local name desc fragment hook req_env
     name=$(toml_get "$pdir/pack.toml" name)
@@ -313,6 +330,11 @@ cmd_pack_install() {
         fi
     fi
     [[ -n "$desc" ]] && note "✓ $name — $desc"
+    if [[ -n "$(toml_get "$dest/pack.toml" tools)" ]]; then
+        note "Native tools available: bopbop pack tools $name"
+        local profile; profile=$(toml_get "$dest/pack.toml" profile)
+        note "Specialist: bopbop local --profile ${profile:-$name}"
+    fi
 }
 
 cmd_pack_list() {
@@ -328,6 +350,7 @@ cmd_pack_list() {
 
 cmd_pack_remove() {
     local name="${1:?usage: bopbop pack remove <name>}"
+    [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { note "invalid pack name"; exit 1; }
     local ctx; ctx=$(context_dir)
     [[ -d "$ctx/packs/$name" ]] || { note "pack '$name' not installed"; exit 1; }
     rm -rf "$ctx/packs/$name"
@@ -340,7 +363,12 @@ cmd_pack() {
         install) shift; cmd_pack_install "$@" ;;
         list)    shift; cmd_pack_list "$@" ;;
         remove)  shift; cmd_pack_remove "$@" ;;
-        *) note "usage: bopbop pack {install <git-url|path> [--run-hook] | list | remove <name>}"; exit 1 ;;
+        tools|call|mcp)
+            local ctx; ctx=$(context_dir)
+            if [[ -f "$ENV_FILE" ]]; then set -a; source "$ENV_FILE"; set +a; fi
+            exec python3 "$REPO_DIR/bin/bopbop-pack.py" --context-dir "$ctx" "$@"
+            ;;
+        *) note "usage: bopbop pack {install <git-url|path> [--run-hook] | list | remove <name> | tools [name] | call <pack> <tool> [json] | mcp --packs <names>}"; exit 1 ;;
     esac
 }
 
@@ -362,19 +390,34 @@ cmd_agent() {
     else
         shift
     fi
+    local ctx; ctx=$(context_dir)
     if [[ -f "$ENV_FILE" ]]; then
         set -a; # shellcheck disable=SC1090
         source "$ENV_FILE"; set +a
     fi
+    export BOPBOP_CONTEXT_DIR="$ctx"
+    # --profile belongs to BopBop here, rather than the wrapper's own profiles.
+    local profile="${BOPBOP_AGENT_PROFILE:-}" args=()
+    while (( $# )); do
+        if [[ "$1" == "--profile" && ( "$harness" == "claude" || "$harness" == "codex" ) ]]; then
+            [[ $# -ge 2 ]] || { note "--profile requires a pack profile"; exit 1; }
+            profile="$2"; shift 2
+        else
+            args+=("$1"); shift
+        fi
+    done
+    if [[ -n "$profile" && ( "$harness" == "claude" || "$harness" == "codex" ) ]]; then
+        exec python3 "$REPO_DIR/bin/bopbop-pack.py" --context-dir "$ctx" wrapper --harness "$harness" --profile "$profile" -- "${args[@]}"
+    fi
     case "$harness" in
-        ollama|local) exec python3 "$REPO_DIR/bin/bopbop-local.py" "$@" ;;
+        ollama|local) exec python3 "$REPO_DIR/bin/bopbop-local.py" "${args[@]}" ;;
         claude)
             cd "$(context_dir)"
-            exec "${BOPBOP_CLAUDE_BIN:-claude}" "$@"
+            exec "${BOPBOP_CLAUDE_BIN:-claude}" "${args[@]}"
             ;;
         codex)
             cd "$(context_dir)"
-            exec "${BOPBOP_CODEX_BIN:-codex}" "$@"
+            exec "${BOPBOP_CODEX_BIN:-codex}" "${args[@]}"
             ;;
         *) note "usage: bopbop agent {ollama|claude|codex} [args...]"; exit 1 ;;
     esac

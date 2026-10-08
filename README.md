@@ -16,7 +16,7 @@ scripts, and tools you've given it.
 
 ## The context-dir idea
 
-BopBop itself is a thin gateway (~1.2k lines of Python). The personality
+BopBop itself is a thin gateway. The personality
 and capabilities live in a **context directory** (`~/.bopbop/context`) —
 a normal agent working dir with `AGENTS.md`/`CLAUDE.md`, a personality file,
 and any scripts you add. Teaching your agent a new trick is: drop a script in
@@ -63,7 +63,7 @@ Then text yourself in Signal (Note to Self). That's your agent.
 bin/bopbop init      scaffold ~/.bopbop (context dir, data dir, env file)
 bin/bopbop doctor    end-to-end health check
 bin/bopbop run       run the server in the foreground (dev)
-bin/bopbop pack      install / list / remove context packs
+bin/bopbop pack      install / list / remove / tools / call / mcp
 bin/bopbop            local Ollama terminal agent (current directory)
 bin/bopbop local      local Ollama terminal agent, accepts --model/--workspace
 bin/bopbop agent      configured interactive harness
@@ -109,6 +109,7 @@ menu. These commands run locally and do not call the model:
 | `/help` | List commands |
 | `/status` | Show model, workspace, context, conversation length, and Ollama load state |
 | `/stats` | Show last-turn and current-session time, tool calls, and tokens |
+| `/tools` | Show enabled native tools and argument schemas |
 | `/reset` | Clear conversation and stats, retaining workspace instructions |
 | `/exit` | Leave the agent |
 
@@ -133,20 +134,33 @@ the CLI and requires no additional packages.
 
 `read_file` and `write_file` stay within the selected workspace, while
 `run_command` executes with your user permissions and has no approval step.
-Use a workspace you trust.
+Use a workspace you trust. A selected local `--profile` exposes only that
+pack’s native tools and its short instructions.
 
 ## Context packs
 
 See the [Ice dashboard pack audit and tool plan](docs/ice-dashboard-pack-plan.md)
-for the proposed dashboard specialist and native pack-tool integration.
+for the original audit. The [Ice pack](packs/ice-dashboard/README.md) is now
+implemented with four native tools and compact read-only dashboard APIs.
+
+```bash
+bopbop pack install ./packs/ice-dashboard
+bopbop local --profile ice
+bopbop agent codex --profile ice    # or claude
+```
+
+See [native pack tools](docs/pack-tools.md) for schemas, handlers, MCP, profile
+selection and server integration; [validation](docs/ice-pack-validation.md)
+records the test results and measured response times.
 
 A **pack** is an installable capability bundle for your agent — a git repo
 (or local dir) shaped like:
 
 ```
-pack.toml             # name, description, fragment, install_hook, required_env
+pack.toml             # name, description, fragment, tools, profile, optional hook
 CLAUDE.fragment.md    # spliced into your context CLAUDE.md (managed markers)
-scripts/ …            # whatever the fragment documents
+tools.json            # optional native tool schemas + handler declarations
+scripts/ …            # handler code and documented helpers
 ```
 
 ```bash
@@ -160,13 +174,15 @@ fragment into your context `CLAUDE.md` between `<!-- bopbop-pack:NAME -->`
 markers — so every turn knows the capability exists. Reinstall is
 idempotent; remove strips the fragment again.
 
-`pack.toml` keys (flat `key = "value"` only):
+`pack.toml` keys (flat TOML values):
 
 | key | meaning |
 |---|---|
 | `name` | kebab-case pack name (required) |
 | `description` | one-liner shown in `pack list` |
 | `fragment` | path to the CLAUDE.md fragment to splice |
+| `profile` | optional short alias for explicit specialist selection |
+| `tools` | optional protocol-v1 tool manifest, e.g. tools.json |
 | `install_hook` | script for system-level setup (timers, deps) |
 | `required_env` | comma-separated vars the pack needs in `~/.bopbop/env` |
 
@@ -213,6 +229,7 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 | `BOPBOP_CONTEXT_DIR` | `~/.bopbop/context` | the agent's working directory and shared context |
 | `BOPBOP_DATA_DIR` | `~/.bopbop/data` | sqlite db + downloaded attachments |
 | `BOPBOP_AGENT_HARNESS` | `claude` | server backend: `claude`, `codex`, or `ollama` |
+| `BOPBOP_AGENT_PROFILE` | unset | installed pack/profile for all server harnesses |
 | `BOPBOP_CLAUDE_BIN` | `claude` | Claude Code binary |
 | `BOPBOP_CLAUDE_MODEL` | `sonnet` | model per turn |
 | `BOPBOP_CODEX_BIN` | `codex` | Codex CLI binary |

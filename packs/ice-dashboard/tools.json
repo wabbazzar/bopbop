@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "name": "ice_status",
+      "description": "Broad fleet attention only, not a named app availability check. For a specific app use ice_query services or health.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "handler": "scripts/ice.py",
+      "timeout_seconds": 8,
+      "max_output_bytes": 8192
+    },
+    {
+      "name": "ice_query",
+      "description": "Get Ice facts: health=project availability + crew + incidents; projects=inventory; services=app probes; shipyard=crew; visits=public page loads; security=probe/auth/ban observations; operations=schedules; traffic=host-wide; usage=tokens; news=briefing.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "report": {
+            "type": "string",
+            "enum": [
+              "projects",
+              "health",
+              "services",
+              "operations",
+              "incidents",
+              "visits",
+              "traffic",
+              "security",
+              "usage",
+              "shipyard",
+              "news"
+            ],
+            "description": "Use services for whether an app is up; health for overall project health; shipyard for all crews; projects for inventory."
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "24h",
+              "7d"
+            ],
+            "description": "Only 24h or 7d; do not silently change an unsupported requested time range."
+          },
+          "project": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Optional exact project name from inventory. OMIT for all projects or fleet-wide questions; never use an empty string or all."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum returned rows; use 20 when listing all projects.",
+            "minimum": 1,
+            "maximum": 20
+          }
+        },
+        "required": [
+          "report"
+        ]
+      },
+      "handler": "scripts/ice.py",
+      "timeout_seconds": 8,
+      "max_output_bytes": 8192
+    },
+    {
+      "name": "ice_detail",
+      "description": "Get one evidence snapshot using a ref from a prior result. No current observation is refreshed.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "ref"
+        ]
+      },
+      "handler": "scripts/ice.py",
+      "timeout_seconds": 8,
+      "max_output_bytes": 8192
+    },
+    {
+      "name": "ice_explain",
+      "description": "Explain dashboard concepts, project/crew roles, public usage measurement, security implementations and limitations.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "type": "string",
+            "maxLength": 240
+          }
+        },
+        "required": [
+          "topic"
+        ]
+      },
+      "handler": "scripts/ice.py",
+      "timeout_seconds": 8,
+      "max_output_bytes": 8192
+    }
+  ]
+}

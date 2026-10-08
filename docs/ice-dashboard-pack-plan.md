@@ -1,8 +1,10 @@
 # Ice dashboard context pack: audit and tool plan
 
-Status: proposal, based on the local dashboard source and read-only runtime
-checks on 2026-10-07 (America/Chicago). The eye alignment fix is implemented;
-the dashboard pack and APIs described here are not implemented yet.
+Status: implemented on 2026-10-07 (America/Chicago). This document preserves
+the original audit and design rationale. Current interfaces are documented in
+the [Ice pack](../packs/ice-dashboard/README.md), [pack tool protocol](pack-tools.md)
+and [validation report](ice-pack-validation.md). The dashboard README and API
+documentation describe the deployed implementation.
 
 ## Recommendation
 

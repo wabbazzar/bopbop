@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import time
+import sys
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -53,6 +54,9 @@ def _build_args(
         args = [binary, script, "--jsonl", "--workspace", CONTEXT_DIR,
                 "--model", model or "gpt-oss:20b", "--context",
                 os.environ.get("BOPBOP_OLLAMA_CONTEXT", "16384")]
+        profile = os.environ.get("BOPBOP_AGENT_PROFILE", "").strip()
+        if profile:
+            args.extend(["--profile", profile, "--context-dir", CONTEXT_DIR])
         if resume_session_id:
             args.extend(["--session-id", resume_session_id])
         args.append(prompt)
@@ -90,6 +94,11 @@ def _build_args(
             args.extend(["--model", model])
         if resume_session_id:
             args.append(resume_session_id)
+        profile = os.environ.get("BOPBOP_AGENT_PROFILE", "").strip()
+        if profile:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+            from bopbop_packs import wrapper_options
+            args[1:1] = wrapper_options(harness, Path(CONTEXT_DIR), profile)
         args.append(prompt)
         return harness, args
 
@@ -107,6 +116,11 @@ def _build_args(
     if resume_session_id:
         args.extend(["--resume", resume_session_id])
     args.append(prompt)
+    profile = os.environ.get("BOPBOP_AGENT_PROFILE", "").strip()
+    if profile:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+        from bopbop_packs import wrapper_options
+        args[1:1] = wrapper_options(harness, Path(CONTEXT_DIR), profile)
     return harness, args
 
 
