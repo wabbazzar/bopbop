@@ -137,6 +137,9 @@ Use a workspace you trust.
 
 ## Context packs
 
+See the [Ice dashboard pack audit and tool plan](docs/ice-dashboard-pack-plan.md)
+for the proposed dashboard specialist and native pack-tool integration.
+
 A **pack** is an installable capability bundle for your agent — a git repo
 (or local dir) shaped like:
 
