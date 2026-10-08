@@ -7,6 +7,7 @@
   import Trace from '$lib/components/Trace.svelte';
   import Character from '$lib/components/Character.svelte';
   import Settings from '$lib/components/Settings.svelte';
+  import { watchViewport } from '$lib/viewport';
 
   let draft = $state('');
   let conversationId = $state<string | null>(null);
@@ -28,6 +29,7 @@
   let transcript: HTMLDivElement;
   let settings: Settings;
   let keyboard = $state(false);
+  let viewportHeight = $state(0);
   let stickBottom = $state(true);
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let turnAbort: AbortController | undefined;
@@ -56,23 +58,23 @@
     try { bearer = sessionStorage.getItem('bopbop_access_token') ?? ''; } catch {}
     restored = true;
     void checkConnection();
-    const updateViewport = () => {
-      const vv = window.visualViewport;
-      if (!vv) return;
-      keyboard = vv.height < window.innerHeight * .78;
-      document.documentElement.style.setProperty('--kbd-viewport-h', `${vv.height}px`);
-      document.documentElement.style.setProperty('--kbd-viewport-t', `${vv.offsetTop}px`);
-    };
-    updateViewport();
-    window.visualViewport?.addEventListener('resize', updateViewport);
-    window.visualViewport?.addEventListener('scroll', updateViewport);
-    window.addEventListener('resize', updateViewport);
+    const stopViewport = watchViewport(frame => {
+      const pinned = stickBottom;
+      const position = transcript?.scrollTop ?? 0;
+      keyboard = frame.keyboard; viewportHeight = frame.height;
+      document.documentElement.style.setProperty('--kbd-viewport-h', `${frame.height}px`);
+      document.documentElement.style.setProperty('--kbd-viewport-t', `${frame.top}px`);
+      void tick().then(() => {
+        if (transcript) {
+          transcript.scrollTop = pinned ? transcript.scrollHeight : position;
+          stickBottom = pinned;
+        }
+      });
+    });
     window.addEventListener('online', checkConnection);
     window.addEventListener('offline', checkConnection);
     return () => {
-      window.visualViewport?.removeEventListener('resize', updateViewport);
-      window.visualViewport?.removeEventListener('scroll', updateViewport);
-      window.removeEventListener('resize', updateViewport);
+      stopViewport();
       window.removeEventListener('online', checkConnection);
       window.removeEventListener('offline', checkConnection);
       clearTimeout(settleTimer); turnAbort?.abort();
@@ -95,9 +97,11 @@
   function fitComposer() {
     if (!textarea) return;
     textarea.style.height = 'auto';
-    textarea.style.height = `${Math.min(128, Math.max(44, textarea.scrollHeight))}px`;
+    const limit = keyboard ? Math.min(88, Math.max(44, viewportHeight * .22)) : 128;
+    textarea.style.height = `${Math.min(limit, Math.max(44, textarea.scrollHeight))}px`;
   }
-  $effect(() => { draft; void tick().then(fitComposer); });
+  $effect(() => { draft; keyboard; viewportHeight; void tick().then(fitComposer); });
+  function hideKeyboard() { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); }
   function newChat() {
     if (busy) return;
     turns = []; conversationId = null; draft = ''; emote = 'happy'; stickBottom = true;
@@ -159,6 +163,7 @@
     <header>
       <div class="identity"><span class="brand">BopBop<span class="brand-dot">.</span></span><span class="connection" class:disconnected={!connected} title={model || harness}><i></i>{!online ? 'Offline' : connected ? (model || harness || 'Connected') : checking ? 'Connecting' : 'Server unavailable'}</span></div>
       <div class="header-actions">
+        {#if keyboard}<button class="quiet keyboard-dismiss" aria-label="Hide keyboard" title="Hide keyboard" onpointerdown={e => e.preventDefault()} onclick={hideKeyboard}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="11" rx="2"/><path d="M7 7h.01M11 7h.01M15 7h.01M7 10h10M8 18l4 3 4-3"/></svg></button>{/if}
         <button class="quiet" onclick={newChat} disabled={busy || !turns.length} title="Start a fresh conversation; clears this device’s transcript"><span aria-hidden="true">＋</span> New chat</button>
         <button class="quiet settings-button" aria-label="Settings" onclick={() => settings.open()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M9 4v6M15 14v6" /></svg></button>
       </div>
@@ -190,13 +195,13 @@
       {#if !stickBottom}<button class="jump" onclick={latest}>Latest reply ↓</button>{/if}
       <form class="input-row" onsubmit={e => { e.preventDefault(); void send(); }}>
         <textarea aria-label="Message" bind:this={textarea} bind:value={draft} onkeydown={onKey} placeholder="Message BopBop…" rows="1" oninput={fitComposer} maxlength="20000"></textarea>
-        <button class="primary send" type="submit" disabled={busy || !online || !draft.trim()} aria-label="Send message"><span aria-hidden="true">↑</span></button>
+        <button class="primary send" type="submit" disabled={busy || !online || !draft.trim()} aria-label="Send message" onpointerdown={e => { if (keyboard) e.preventDefault(); }}><span aria-hidden="true">↑</span></button>
       </form>
       <div class="composer-note">{busy ? 'You can draft your next message while BopBop works.' : 'Replies may use tools'}<span>{storageWarning ? 'History not saved' : 'Saved on this device'}</span></div>
     </section>
   </main>
 </div>
-<Settings bind:this={settings} bind:bearer {requiresToken} onchanged={() => { void checkConnection(); }} />
+<Settings bind:this={settings} bind:bearer {requiresToken} {keyboard} {viewportHeight} onchanged={() => { void checkConnection(); }} />
 
 <style>
   .viewport { position: fixed; top: var(--kbd-viewport-t, 0); left: 0; right: 0; height: var(--kbd-viewport-h, 100dvh); display: flex; justify-content: center; overflow: hidden; }
@@ -220,5 +225,11 @@
   .jump { position: absolute; bottom: 95px; left: 50%; transform: translateX(-50%); padding: .5rem 1rem; border: 1px solid var(--line); border-radius: 2rem; background: var(--solid); color: var(--ink); font-size: 12px; min-height: 44px; box-shadow: 0 4px 18px #1c2b5320; }
   @media(max-width: 450px) { main { padding-left: .8rem; padding-right: .8rem; }.brand { font-size: 25px; }.connection { max-width: 180px; } }
   @media(max-height: 550px) { main { padding-top: .35rem; }.stage, main.conversation .stage { height: 54px; flex-direction: row; padding: .1rem .35rem; justify-content: flex-start; }.portrait, main.conversation .portrait { height: 45px; }.empty { padding: .6rem .3rem; }.empty h1 { font-size: 20px; }.starters { margin-top: .6rem; }.composer-note { display: none; } }
-  main.keyboard .stage { height: 48px; padding: .1rem .35rem; flex-direction: row; justify-content: flex-start; } main.keyboard .portrait { height: 42px; }
+  main.keyboard { padding-top: max(.35rem, env(safe-area-inset-top)); padding-bottom: .35rem; grid-template-rows: auto 0 minmax(0, 1fr); }
+  main.keyboard header { padding-bottom: .3rem; }.keyboard .brand { font-size: 20px; }.keyboard .connection { font-size: 10px; max-width: 150px; }
+  main.keyboard .stage, .keyboard .composer-note, .keyboard .empty p, .keyboard .starters { display: none; }
+  .keyboard .chat { grid-row: 3; }
+  .keyboard .empty { padding: .5rem .3rem; }.keyboard .empty h1 { font-size: 19px; margin: 0; }.keyboard .transcript { padding-top: .3rem; }
+  .keyboard-dismiss { width: 44px; padding: 10px; }.keyboard-dismiss svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .keyboard textarea { max-height: 88px; }.keyboard .input-row { margin-top: .2rem; }
 </style>

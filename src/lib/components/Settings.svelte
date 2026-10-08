@@ -5,8 +5,9 @@
     local_model_error: string | null; profiles: { id: string; name: string }[];
     harnesses: { id: string; available: boolean }[];
   };
-  let { bearer = $bindable(''), requiresToken = false, onchanged }: {
-    bearer?: string; requiresToken?: boolean; onchanged: () => void;
+  import { tick } from 'svelte';
+  let { bearer = $bindable(''), requiresToken = false, keyboard = false, viewportHeight = 0, onchanged }: {
+    bearer?: string; requiresToken?: boolean; keyboard?: boolean; viewportHeight?: number; onchanged: () => void;
   } = $props();
   let dialog: HTMLDialogElement;
   let catalog = $state<Catalog | null>(null);
@@ -21,6 +22,15 @@
   let message = $state('');
   let requestId = 0;
   let remembered: Record<string, string> = {};
+
+  function revealField() {
+    const field = document.activeElement;
+    if (!keyboard || !dialog?.open || !(field instanceof HTMLInputElement) || !dialog.contains(field)) return;
+    const body = dialog.querySelector('.sheet-body')!;
+    const fieldBox = field.getBoundingClientRect(), bodyBox = body.getBoundingClientRect();
+    if (fieldBox.top < bodyBox.top + 8 || fieldBox.bottom > bodyBox.bottom - 8) field.scrollIntoView({ block: 'center', behavior: 'instant' });
+  }
+  $effect(() => { keyboard; viewportHeight; void tick().then(revealField); });
 
   function headers(): Record<string, string> { return bearer ? { Authorization: `Bearer ${bearer}` } : {}; }
   async function failure(res: Response): Promise<string> {
@@ -77,7 +87,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-labelledby="settings-title" onclose={() => { requestId++; }}>
+<dialog bind:this={dialog} class:keyboard aria-labelledby="settings-title" onfocusin={() => { void tick().then(revealField); }} onclose={() => { requestId++; }}>
   <div class="sheet">
     <header><div><span class="eyebrow">BopBop</span><h2 id="settings-title">Settings</h2></div><button class="close" aria-label="Close settings" onclick={() => dialog.close()}>×</button></header>
     <div class="sheet-body">
@@ -132,7 +142,7 @@
 </dialog>
 
 <style>
-  dialog { position: fixed; inset: auto 0 max(0px, calc(100dvh - var(--kbd-viewport-h, 100dvh) - var(--kbd-viewport-t, 0px))); width: min(100%, 520px); max-width: none; max-height: calc(var(--kbd-viewport-h, 100dvh) - 12px); padding: 0; margin: 0 auto; border: 1px solid var(--line); border-radius: 24px 24px 0 0; color: var(--ink); background: var(--solid); box-shadow: 0 -10px 60px #24335630; }
+  dialog { position: fixed; inset: calc(var(--kbd-viewport-t, 0px) + 12px) 0 auto; width: min(100%, 520px); max-width: none; max-height: calc(var(--kbd-viewport-h, 100dvh) - 12px); padding: 0; margin: 0 auto; border: 1px solid var(--line); border-radius: 24px 24px 0 0; color: var(--ink); background: var(--solid); box-shadow: 0 -10px 60px #24335630; }
   dialog::backdrop { background: #14203545; backdrop-filter: blur(5px); }
   dialog { overflow: hidden; }
   .sheet { display: flex; flex-direction: column; max-height: inherit; } header { padding: 1.25rem 1.4rem 1rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); flex: none; }
@@ -149,5 +159,6 @@
   .text-button { border: 0; background: transparent; color: var(--accent-link); padding: .4rem; text-decoration: underline; text-underline-offset: 3px; }
   .feedback { padding: .65rem .8rem; font-size: 13px; border-radius: .65rem; background: var(--panel); }.error { color: var(--error); }.success { color: var(--ink); border: 1px solid var(--line); }
   .access { border-top: 1px solid var(--line); margin-top: 1.3rem; padding-top: 1.2rem; }.privacy { font-size: 11px; color: var(--muted); margin: 1.3rem 0 0; }
-  @media(min-width: 700px) { dialog { inset: calc(var(--kbd-viewport-t, 0px) + 5vh) 0 auto; border-radius: 24px; max-height: min(88vh, calc(var(--kbd-viewport-h, 100dvh) - 24px)); } }
+  dialog.keyboard header { padding: .4rem 1rem; } .keyboard .eyebrow, .keyboard .privacy { display: none; }.keyboard h2 { font-size: 20px; margin: 0; }.keyboard .sheet-body { padding: .75rem 1rem; }
+  @media(min-width: 700px) { dialog { inset: calc(var(--kbd-viewport-t, 0px) + var(--kbd-viewport-h, 100dvh) * .05) 0 auto; border-radius: 24px; max-height: calc(var(--kbd-viewport-h, 100dvh) * .88); } }
 </style>

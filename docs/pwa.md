@@ -63,10 +63,18 @@ URLs, build output, or offline cache. Re-enter it in another tab/device.
 - Ctrl/Cmd+Enter sends; plain Enter creates a new line. Drafting remains available
   during an active turn. New chat starts a new conversation and clears this
   device's displayed transcript, without deleting server history.
-- `visualViewport` follows mobile keyboard height/offset, safe areas are respected,
-  input text is at least 16px, zoom stays available, and reduced motion stops the
-  character bob. Hardware iPhone keyboard/safe-area behavior still needs a device
-  check; emulated viewports and WebKit aren't a physical iPhone.
+- The [visual viewport](https://developer.mozilla.org/en-US/docs/Web/API/VisualViewport)
+  follows mobile keyboard height and panning even when the layout viewport stays
+  full height. Typing mode hides the character/footer, compacts the header,
+  removes the bottom home-indicator inset, and limits multiline composer growth
+  to preserve conversation space. Hide keyboard dismisses focus; Send preserves
+  typing focus. Viewport changes retain the latest reply or your scrollback
+  position. Settings shrinks with the viewport and reveals focused text fields.
+  The root canvas carries the app background, avoiding an unpainted white band
+  during Safari focus panning. Input text is at least 16px; pinch zoom keeps its
+  native behavior, and reduced motion stops the character bob. Hardware iPhone
+  keyboard/safe-area behavior still needs a device check; emulated viewports and
+  WebKit aren't a physical iPhone.
 - A rolling maximum of 40 turns, partial replies, traces, conversation ID, and
   draft are saved in `localStorage` on this origin. Storage is bounded by dropping
   older turns; saved answers cap at 100,000 characters and tool argument/result
@@ -185,6 +193,11 @@ Projects cover desktop Chromium, mobile Chromium, and mobile WebKit.
 Dimension checks include iPhone SE (375×667), 13 (390×844), 15 (393×852),
 Pro Max (430×932), and a keyboard-sized 393×340 viewport, including form
 scrolling and touch target sizes. These are emulations, not hardware testing.
+Additional tests vary visual viewport height/offset independently of the full
+852px layout viewport, covering the composer-to-keyboard gap, focus/dismissal,
+multiline drafts, pinned replies, scrollback, landscape rotation, settings text
+fields, and pinch zoom. The keyboard screenshot shows the app's visible area;
+it does not render or exercise a native iOS keyboard.
 
 Screenshot baselines cover empty/chat states, expanded trace, the settings sheet,
 an expression contact sheet, and light/dark
