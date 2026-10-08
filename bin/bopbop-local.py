@@ -13,6 +13,7 @@ import pathlib
 import readline
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import termios
@@ -25,13 +26,16 @@ import uuid
 from dataclasses import dataclass
 from bopbop_splash import show_banner
 from bopbop_packs import Pack, Registry, context_directory
+from bopbop_tool_ui import (browse_tools, clip_line, color_json, example_arguments, find_tool,
+                            parse_call, safe_text, show_reference, tool_entries)
 
 
 SLASH_COMMANDS = (
     ("/help", "Show this list"),
     ("/status", "Show model, workspace, context, and Ollama load state"),
     ("/stats", "Show last-turn and current-session usage"),
-    ("/tools", "Show enabled tools by pack and installed packs to enable"),
+    ("/tools", "Browse tool references; /tools NAME shows one directly"),
+    ("/call", "Call TOOL with JSON arguments; append :: question to ask the model"),
     ("/reset", "Clear conversation and stats; keep workspace instructions"),
     ("/exit", "Leave BopBop"),
 )
@@ -94,7 +98,8 @@ def _escape_key(fd: int) -> str:
     return {b"A": "up", b"B": "down", b"C": "right", b"D": "left"}.get(third, "escape")
 
 
-def _slash_prompt(fd: int, prompt: str, display: Display) -> str | None:
+def _slash_prompt(fd: int, prompt: str, display: Display,
+                  runtime: AgentRuntime | None = None) -> str | None:
     """Edit a slash command below the prompt; None returns to normal input."""
     buffer = "/"
     cursor = 1
@@ -103,19 +108,31 @@ def _slash_prompt(fd: int, prompt: str, display: Display) -> str | None:
     prompt_width = len("bopbop> ")
 
     def matches() -> list[tuple[str, str]]:
+        parts = buffer.split(maxsplit=1)
+        if runtime and parts and parts[0] in {"/tools", "/call"} and " " in buffer:
+            prefix = parts[1] if len(parts) > 1 else ""
+            return [(f"{parts[0]} {definition['name']}", definition['description'])
+                    for definition, _ in tool_entries(runtime)
+                    if definition['name'].startswith(prefix)]
         return [(name, description) for name, description in SLASH_COMMANDS
                 if name.startswith(buffer.lower())] if buffer.startswith("/") else []
 
     def render() -> None:
         found = matches() if menu_visible else []
         rows = []
-        if menu_visible and buffer.startswith("/"):
+        editing_arguments = buffer.startswith("/call ") and " " in buffer[len("/call "):]
+        if menu_visible and buffer.startswith("/") and not editing_arguments:
             if found:
-                for index, (name, description) in enumerate(found):
+                columns, height = shutil.get_terminal_size((90, 30))
+                limit = min(7, max(1, height - 4))
+                start = max(0, selected - limit + 1)
+                for index in range(start, min(len(found), start + limit)):
+                    name, description = found[index]
                     marker = "▸" if index == selected else " "
                     style = "selected" if index == selected else "strong"
-                    rows.append(f"  {display.ink(marker + ' ' + name.ljust(9), style)}"
-                                f"  {display.ink(description, 'muted')}")
+                    row = (f"  {display.ink(marker + ' ' + name.ljust(9), style)}"
+                           f"  {display.ink(safe_text(description), 'muted')}")
+                    rows.append(clip_line(row, max(1, columns - 1)))
             else:
                 rows.append("  " + display.ink("No matching commands", "muted"))
         sys.stdout.write("\r\x1b[J" + prompt + buffer)
@@ -138,6 +155,19 @@ def _slash_prompt(fd: int, prompt: str, display: Display) -> str | None:
         if key in (b"\r", b"\n"):
             found = matches() if menu_visible else []
             chosen = found[selected][0] if found else buffer
+            if chosen == "/call" and found and runtime:
+                buffer, cursor, selected = "/call ", len("/call "), 0
+                render()
+                continue
+            if chosen.startswith("/call ") and found:
+                # Insert editable arguments; Enter on a suggestion never executes a tool.
+                name = chosen.split()[1]
+                definition, _ = find_tool(runtime, name)
+                buffer = chosen + " " + json.dumps(example_arguments(definition), ensure_ascii=False)
+                cursor = len(buffer)
+                menu_visible = False
+                render()
+                continue
             return finish(chosen)
         if key == b"\x03":
             sys.stdout.write("\r\x1b[J" + prompt + "^C\r\n")
@@ -156,6 +186,8 @@ def _slash_prompt(fd: int, prompt: str, display: Display) -> str | None:
             found = matches()
             if found:
                 buffer = found[selected][0]
+                if buffer in {"/call", "/tools"}:
+                    buffer += " "
                 cursor = len(buffer)
                 menu_visible = True
         elif key == b"\x1b":
@@ -179,10 +211,19 @@ def _slash_prompt(fd: int, prompt: str, display: Display) -> str | None:
             buffer = buffer[:cursor] + key.decode("ascii") + buffer[cursor:]
             cursor += 1
             selected = 0
+        elif key[0] >= 128:
+            count = 2 if key[0] < 224 else 3 if key[0] < 240 else 4
+            raw = bytearray(key)
+            while len(raw) < count and select.select([fd], [], [], 0.05)[0]:
+                raw.extend(os.read(fd, 1))
+            value = raw.decode("utf-8", errors="replace")
+            buffer = buffer[:cursor] + value + buffer[cursor:]
+            cursor += len(value)
+            selected = 0
         render()
 
 
-def prompt_line(display: Display) -> str:
+def prompt_line(display: Display, runtime: AgentRuntime | None = None) -> str:
     """Read ordinary text with readline; show a menu as soon as `/` is typed."""
     prompt = display.ink("bopbop", "brand") + "> "
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -192,10 +233,10 @@ def prompt_line(display: Display) -> str:
     sys.stdout.write(prompt)
     sys.stdout.flush()
     try:
-        tty.setraw(fd)
+        tty.setraw(fd, termios.TCSANOW)
         first = os.read(fd, 1)
         if first == b"/":
-            slash_result = _slash_prompt(fd, prompt, display)
+            slash_result = _slash_prompt(fd, prompt, display, runtime)
         else:
             slash_result = None
     finally:
@@ -483,6 +524,8 @@ def show_help(display: Display) -> None:
     display.event("◆ commands", style="brand")
     for command, description in SLASH_COMMANDS:
         display.event(f"  {command:<8}", description, "strong")
+    display.event("  usage", '/call TOOL {"argument":"value"} :: your question', "tool")
+    display.event("  direct", "Omit :: to print the result without a model call; next questions can use it")
 
 
 def show_status(model: str, context: int, workspace: pathlib.Path,
@@ -564,6 +607,7 @@ def show_tools(runtime: AgentRuntime, display: Display) -> None:
             display.event("    specialist", f"bopbop local --profile {pack.name}", 'strong')
     if not runtime.registry:
         display.event("  packs", "No native pack enabled. Inspect installations with: bopbop pack list", 'muted')
+    display.event("  inspect", "/tools NAME · /call NAME {JSON} [:: question]", 'strong')
 
 
 def handle_command(prompt: str, messages: list[dict], session: SessionStats,
@@ -571,7 +615,10 @@ def handle_command(prompt: str, messages: list[dict], session: SessionStats,
                    display: Display, runtime: AgentRuntime | None = None) -> bool:
     if not prompt.startswith("/"):
         return False
-    command = prompt.split(maxsplit=1)[0].lower()
+    parts = prompt.split(maxsplit=1)
+    command = parts[0].lower()
+    argument = parts[1] if len(parts) > 1 else ""
+    runtime = runtime or AgentRuntime()
     if command == "/help":
         show_help(display)
     elif command == "/status":
@@ -579,7 +626,16 @@ def handle_command(prompt: str, messages: list[dict], session: SessionStats,
     elif command == "/stats":
         show_session_stats(session, display)
     elif command == "/tools":
-        show_tools(runtime or AgentRuntime(), display)
+        if argument:
+            try:
+                show_reference(runtime, argument.strip(), display)
+            except ValueError as exc:
+                display.event("Tool reference", str(exc), "error")
+        else:
+            show_tools(runtime, display)
+            browse_tools(runtime, display, _escape_key)
+    elif command == "/call":
+        direct_call(argument, messages, session, model, context, workspace, display, runtime)
     elif command == "/reset":
         messages[:] = messages[:1]
         session.last = None
@@ -591,12 +647,74 @@ def handle_command(prompt: str, messages: list[dict], session: SessionStats,
     return True
 
 
+def run_tool(workspace, name, arguments, display, runtime, usage, emit=None):
+    """One dispatch and telemetry path for explicit and model-selected calls."""
+    display.event(f"├─ → {name}", safe_text(call_label(name, arguments)), "tool")
+    if emit:
+        emit({"kind": "tool", "name": name, "args": arguments})
+    started = time.monotonic()
+    result = runtime.execute(workspace, name, arguments)
+    telemetry = {}
+    failed = result.startswith("ERROR:") or (result.startswith("exit=") and not result.startswith("exit=0"))
+    if runtime.registry and name in runtime.registry.handlers:
+        value = json.loads(result)
+        failed = value.get("ok") is False
+        detail = value.get("telemetry")
+        telemetry = {"state": value.get("state"), "report": value.get("report"),
+                     "response_bytes": len(result.encode()), "source_age_s": value.get("sample_age_s"),
+                     "truncated": value.get("truncated"), **(detail if isinstance(detail, dict) else {})}
+        display.event("│    evidence", safe_text(json.dumps(telemetry, ensure_ascii=False)), "muted")
+    elapsed = time.monotonic() - started
+    usage.tool_calls += 1
+    display.event("│    ← result", f"{safe_text(result_preview(result))} ({elapsed:.2f}s)",
+                  "error" if failed else "ok")
+    if emit:
+        emit({"kind": "tool_result", "name": name, "ok": not failed,
+              "preview": result_preview(result), "duration_ms": round(elapsed * 1000), **telemetry})
+    return result
+
+
+def direct_call(text, messages, session, model, context, workspace, display, runtime):
+    try:
+        name, arguments, question = parse_call(text, runtime)
+    except (ValueError, TypeError, RecursionError) as exc:
+        display.event("Invalid call", safe_text(str(exc)), "error")
+        return
+    started = time.monotonic()
+    usage = TurnStats()
+    # Normal tool-role evidence, with an assistant call/result pair for Ollama.
+    # One user boundary keeps pruning atomic when an inline question is used.
+    request = f"I requested this tool call: {name} {json.dumps(arguments, ensure_ascii=False)}."
+    if question:
+        request += f" Use its result to answer this question: {question}"
+    messages.append({"role": "user", "content": request})
+    messages.append({"role": "assistant", "content": "", "tool_calls": [
+        {"function": {"name": name, "arguments": arguments}}]})
+    result = run_tool(workspace, name, arguments, display, runtime, usage)
+    messages.append({"role": "tool", "tool_name": name, "content": result})
+    usage.wall_s = time.monotonic() - started
+    if question:
+        answer, usage = turn(model, messages, workspace, context, display,
+                             runtime=runtime, initial_usage=usage)
+        display.answer(answer)
+    else:
+        print("\n" + display.ink(f"◆ {name} · result", "tool"))
+        try:
+            print(color_json(json.loads(result), display), flush=True)
+        except (ValueError, TypeError):
+            print(safe_text(result), flush=True)
+        display.event("└─ direct call", f"{usage.wall_s:.2f}s · 1 tool · 0 model calls · 0 model tokens", "model")
+        display.event("  context", "Result kept for your next question; /reset clears it", "muted")
+    session.record(usage)
+
+
 def turn(model: str, messages: list[dict], workspace: pathlib.Path,
          context: int, display: Display, emit=None,
-         runtime: AgentRuntime | None = None) -> tuple[str, TurnStats]:
+         runtime: AgentRuntime | None = None,
+         initial_usage: TurnStats | None = None) -> tuple[str, TurnStats]:
     runtime = runtime or AgentRuntime()
-    turn_started = time.monotonic()
-    usage = TurnStats()
+    usage = initial_usage or TurnStats()
+    turn_started = time.monotonic() - usage.wall_s
     steps = 4 if runtime.profile else 12
     for step in range(steps):
         # Remove complete old turns before each model call, preserving pairs.
@@ -660,29 +778,7 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
             fn = call.get("function") or {}
             name = fn.get("name", "")
             args = fn.get("arguments") or {}
-            display.event(f"├─ → {name}", call_label(name, args), "tool")
-            if emit:
-                emit({"kind": "tool", "name": name, "args": args})
-            tool_started = time.monotonic()
-            result = runtime.execute(workspace, name, args)
-            telemetry = {}
-            call_failed = result.startswith("ERROR:") or (result.startswith("exit=") and not result.startswith("exit=0"))
-            if runtime.registry and name in runtime.registry.handlers:
-                value = json.loads(result)
-                call_failed = value.get("ok") is False
-                detail = value.get("telemetry")
-                telemetry = {"state": value.get("state"), "report": value.get("report"),
-                    "response_bytes": len(result.encode()), "source_age_s": value.get("sample_age_s"),
-                    "truncated": value.get("truncated"), **(detail if isinstance(detail, dict) else {})}
-                display.event("│    evidence", json.dumps(telemetry, ensure_ascii=False), "muted")
-            usage.tool_calls += 1
-            display.event("│    ← result", (f"{result_preview(result)}"
-                f" ({time.monotonic() - tool_started:.2f}s)"),
-                "error" if call_failed else "ok")
-            if emit:
-                emit({"kind": "tool_result", "name": name, "ok": not call_failed,
-                      "preview": result_preview(result), "duration_ms": round((time.monotonic() - tool_started) * 1000),
-                      **telemetry})
+            result = run_tool(workspace, name, args, display, runtime, usage, emit)
             messages.append({"role": "tool", "tool_name": name, "content": result})
     usage.wall_s = time.monotonic() - turn_started
     if emit:
@@ -785,7 +881,7 @@ def main():
         def interactive_prompts():
             while True:
                 try:
-                    yield prompt_line(display)
+                    yield prompt_line(display, runtime)
                 except KeyboardInterrupt:
                     continue
                 except EOFError:

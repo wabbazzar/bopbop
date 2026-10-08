@@ -75,7 +75,8 @@ def validate_schema(schema: dict) -> None:
             raise ValueError("parameter maxLength exceeds 4096")
 
 
-def validate_arguments(schema: dict, arguments: dict) -> None:
+def validate_arguments(schema: dict, arguments: dict, *, pack_protocol: bool = True) -> None:
+    """Validate types/bounds; native packs additionally bound scalar strings."""
     if not isinstance(arguments, dict):
         raise ValueError("tool arguments must be an object")
     props = schema.get("properties", {})
@@ -88,9 +89,11 @@ def validate_arguments(schema: dict, arguments: dict) -> None:
         kinds = {"string": (str,), "integer": (int,), "boolean": (bool,), "number": (int, float)}
         if type(value) not in kinds[prop["type"]]:
             raise ValueError(f"{key} must be {prop['type']}")
-        if isinstance(value, str) and (len(value) > prop.get("maxLength", 4096)
-                                      or any(ord(c) < 32 for c in value)):
-            raise ValueError(f"{key} exceeds its length limit or contains control characters")
+        if isinstance(value, str):
+            maximum = prop.get("maxLength", 4096 if pack_protocol else None)
+            if ((maximum is not None and len(value) > maximum)
+                    or (pack_protocol and any(ord(c) < 32 for c in value))):
+                raise ValueError(f"{key} exceeds its length limit or contains control characters")
         if "enum" in prop and value not in prop["enum"]:
             raise ValueError(f"{key} must be one of {prop['enum']}")
         if type(value) in (int, float):
@@ -151,6 +154,19 @@ class Pack:
                     raise ValueError("tool timeout must be between .05 and 60 seconds")
                 if type(maximum) is not int or not 256 <= maximum <= 65536:
                     raise ValueError("tool output limit must be 256–65536 bytes")
+                # Human reference material stays out of model/MCP schemas.
+                for field in ("documentation", "returns"):
+                    if field in entry and (not isinstance(entry[field], str) or len(entry[field]) > 8000):
+                        raise ValueError(f"tool {field} must be a string of at most 8000 characters")
+                examples = entry.get("examples", [])
+                if not isinstance(examples, list) or len(examples) > 8:
+                    raise ValueError("tool examples must be a list of at most eight entries")
+                for example in examples:
+                    if not isinstance(example, dict) or set(example) - {"arguments", "summary"}:
+                        raise ValueError("invalid tool example")
+                    if not isinstance(example.get("summary", ""), str) or len(example.get("summary", "")) > 240:
+                        raise ValueError("invalid tool example summary")
+                    validate_arguments(entry["parameters"], example.get("arguments"))
                 seen.add(name)
                 self.definitions.append({**entry, "handler_path": handler,
                                          "timeout_seconds": timeout, "max_output_bytes": maximum})

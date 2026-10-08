@@ -114,12 +114,40 @@ menu. These commands run locally and do not call the model:
 | `/help` | List commands |
 | `/status` | Show model, workspace, context, conversation length, and Ollama load state |
 | `/stats` | Show last-turn and current-session time, tool calls, and tokens |
-| `/tools` | Show enabled tools grouped by pack, plus installed packs and activation commands |
+| `/tools` | Browse enabled tool references with arrow keys; `/tools NAME` shows one directly |
+| `/call TOOL {JSON} [:: question]` | Execute a tool directly; optionally give its result to the model with a question |
 | `/reset` | Clear conversation and stats, retaining workspace instructions |
 | `/exit` | Leave the agent |
 
 Piped input and one-turn prompts still accept slash commands, without the
 interactive suggestion menu.
+
+### Choose the evidence yourself
+
+You can bypass model tool discovery when you know what to query:
+
+```text
+/call ice_query {"report":"health"}
+/call ice_query {"report":"visits","window":"7d"} :: Summarize public usage and its limits
+```
+
+Without `::`, a call prints its full result and uses no model tokens. Its result
+stays in the conversation for your next question; make several calls before
+asking for a combined summary. With `::`, BopBop calls the tool first and sends
+the evidence with your question to the model. Additional model-selected calls
+remain possible. `/reset` clears the evidence, and normal history limits apply.
+Arguments are validated before execution, and only enabled tools can be called.
+Workspace writes and commands execute immediately, just as model-selected tools do.
+
+`/tools` lists pack ownership and opens a reference browser in an interactive
+terminal: **↑/↓** select a tool, **←/→** scroll its documentation, **Enter** keeps
+the reference in your terminal scrollback, and **Esc** closes it. `/tools ice_query`
+shows the same reference directly. Each panel includes typed parameters, allowed
+values and bounds, examples, return-value notes, and the exact model schema.
+Browsing never calls a tool or model. Type `/call ` or `/tools ` for tool-name
+suggestions; selecting a `/call` suggestion inserts editable arguments and
+requires another Enter to execute. These commands belong to the local terminal
+harness; browser/Signal chat and wrapper harnesses keep their existing interfaces.
 
 #### Reading the trace
 

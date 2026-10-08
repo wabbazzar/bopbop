@@ -5,6 +5,40 @@ loop and Ollama `gpt-oss:20b`, low thinking, 16,384-token context and a 512-toke
 per-call generation budget. Hosted wrapper agents were not used for these model
 runs. Live transcripts and session evidence were kept outside both repositories.
 
+## Explicit terminal calls (2026-10-08)
+
+The terminal supports `/call TOOL {JSON}` to print a result without a model
+request, and `/call TOOL {JSON} :: question` to fetch evidence before the first
+model request. Multiple direct calls can supply a later combined summary.
+`/tools` provides an arrow-key reference browser; `/tools NAME` prints typed
+parameters, bounds, notes, examples, return-value documentation and the exact
+model schema. Human reference metadata stays outside model schemas.
+
+The expanded BopBop server suite passes **148 tests**, including 27 explicit-call
+and reference tests. Cases cover disabled/unknown tools, malformed JSON and
+schema failures without dispatch/history changes, direct failure evidence,
+multiline workspace writes, reset, schema fingerprint stability, real HTTP
+payloads with prefetched evidence, profile call budgets, and terminal selection,
+editable argument suggestions and terminal restoration. All model-independent
+checks use fixtures; live transcripts remain outside the repository.
+
+Live `gpt-oss:20b` checks used the existing 16,384 context/low thinking defaults:
+
+| Check | Observed time | Calls |
+|---|---|---|
+| Direct inventory requests | 0.05s each | One tool, zero model calls/tokens |
+| Inline question, cold model | 29.1s total, including 17.3s model load | One tool, one model request |
+| Same inline question after instruction clarification, warm model | 9.6s total | One tool, one model request |
+| Two direct calls then a combined question, warm model | 7.2s total | Two tools, one model request |
+
+The initial inline answer confused the inventory total with the length of the
+returned `items`. A short instruction now distinguishes returned rows from
+summary totals and omitted rows; the identical question then answered correctly.
+The two-result follow-up also correctly distinguished the returned row counts
+without fetching more data. These timings describe these runs, not a benchmark
+or an accuracy guarantee; bypassing discovery still leaves interpretation to
+the model.
+
 ## Delivered
 
 - A generic pack tool protocol with schema validation, confined handler paths,

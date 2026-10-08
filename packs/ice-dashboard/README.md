@@ -41,6 +41,22 @@ bopbop pack call ice-dashboard ice_query '{"report":"visits","project":"quizly",
 bopbop pack call ice-dashboard ice_explain '{"topic":"fail2ban recidive"}'
 ```
 
+Inside the local terminal chat, `/tools` opens an arrow-key reference browser.
+`/tools ice_query` shows its typed parameters, enums, notes, examples and exact
+model schema directly. Calls can supply evidence without model discovery:
+
+```text
+/call ice_query {"report":"projects","limit":20}
+/call ice_query {"report":"health"} :: Summarize what needs attention
+/call ice_explain {"topic":"public usage"} :: Explain what we can measure
+```
+
+Calls without `::` print the result with no model request and retain it for your
+next question. Multiple calls can prepare a combined summary. With `::`, the
+model starts with the requested result in its context and may fetch additional
+evidence if needed. Normal history limits apply; `/reset` clears the evidence.
+Reinstall this pack after a source update to refresh its human reference notes.
+
 `ICE_DASHBOARD_URL` defaults to `http://127.0.0.1:5175`; it must be an HTTP(S)
 origin without a path or embedded credentials. Set `ICE_BOPBOP_TOKEN` in both
 service environments if accessing Ice remotely or enabling bearer protection.

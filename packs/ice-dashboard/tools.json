@@ -12,7 +12,15 @@
       },
       "handler": "scripts/ice.py",
       "timeout_seconds": 8,
-      "max_output_bytes": 8192
+      "max_output_bytes": 8192,
+      "documentation": "Read-only GET /api/bopbop/status. Covers services, operations, incidents and Shipyard; other domains remain unqueried. Domain observations have independent ages. For a named app, use ice_query with services or health instead.",
+      "returns": "JSON object with schema_version, ok, report, state, scope, coverage, observation times, limitations and telemetry. Reports also expose summary/items and truncation where applicable. ok=true means the report was processed; it does not establish that a project is healthy.",
+      "examples": [
+        {
+          "summary": "Fetch fleet attention without a model call.",
+          "arguments": {}
+        }
+      ]
     },
     {
       "name": "ice_query",
@@ -64,7 +72,31 @@
       },
       "handler": "scripts/ice.py",
       "timeout_seconds": 8,
-      "max_output_bytes": 8192
+      "max_output_bytes": 8192,
+      "documentation": "Read-only GET /api/bopbop/query. Server defaults: window=24h; limit=5, or 20 for projects. Omit project for the fleet. visits supports known public apps only; traffic is host-wide and rejects project filters. Snapshot reports do not become history when window=7d. Inspect coverage, item states, source age and limitations before drawing conclusions.",
+      "returns": "JSON object with schema_version, ok, report, state, scope, coverage, observation times, limitations and telemetry. Reports also expose summary/items and truncation where applicable. ok=true means the report was processed; it does not establish that a project is healthy.",
+      "examples": [
+        {
+          "summary": "List the inventory; inventory alone does not establish health.",
+          "arguments": {
+            "report": "projects",
+            "limit": 20
+          }
+        },
+        {
+          "summary": "Combined project availability, crew and incident evidence.",
+          "arguments": {
+            "report": "health"
+          }
+        },
+        {
+          "summary": "Eligible public page loads during the past seven days.",
+          "arguments": {
+            "report": "visits",
+            "window": "7d"
+          }
+        }
+      ]
     },
     {
       "name": "ice_detail",
@@ -75,7 +107,8 @@
         "properties": {
           "ref": {
             "type": "string",
-            "maxLength": 64
+            "maxLength": 64,
+            "description": "Opaque ice_ reference copied from an earlier result; expires after ten minutes."
           }
         },
         "required": [
@@ -84,7 +117,9 @@
       },
       "handler": "scripts/ice.py",
       "timeout_seconds": 8,
-      "max_output_bytes": 8192
+      "max_output_bytes": 8192,
+      "documentation": "Read-only GET /api/bopbop/detail. Copy an opaque ice_ reference from a previous result. Snapshots expire after ten minutes and can disappear on restart or another worker. This returns the original evidence; repeat the original query for refreshed observations.",
+      "returns": "JSON object with schema_version, ok, report, state, scope, coverage, observation times, limitations and telemetry. Reports also expose summary/items and truncation where applicable. ok=true means the report was processed; it does not establish that a project is healthy."
     },
     {
       "name": "ice_explain",
@@ -95,7 +130,8 @@
         "properties": {
           "topic": {
             "type": "string",
-            "maxLength": 240
+            "maxLength": 240,
+            "description": "Dashboard concept or security topic to explain, such as public usage or fail2ban."
           }
         },
         "required": [
@@ -104,7 +140,23 @@
       },
       "handler": "scripts/ice.py",
       "timeout_seconds": 8,
-      "max_output_bytes": 8192
+      "max_output_bytes": 8192,
+      "documentation": "Read-only GET /api/bopbop/explain. Uses curated dashboard concepts and dated guidance. Security explanations can include selected fail2ban declarations and source modification time; declarations do not prove the running jail or firewall matches them.",
+      "returns": "JSON object with schema_version, ok, report, state, scope, coverage, observation times, limitations and telemetry. Reports also expose summary/items and truncation where applicable. ok=true means the report was processed; it does not establish that a project is healthy.",
+      "examples": [
+        {
+          "summary": "Understand public usage measurement and its limits.",
+          "arguments": {
+            "topic": "public usage"
+          }
+        },
+        {
+          "summary": "Understand security concepts and declared settings.",
+          "arguments": {
+            "topic": "security fail2ban"
+          }
+        }
+      ]
     }
   ]
 }

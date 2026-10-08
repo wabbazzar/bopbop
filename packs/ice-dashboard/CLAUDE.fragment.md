@@ -26,8 +26,12 @@ All crew questions use `report: shipyard` with no project. Inventory and
 incidents also allow an omitted project. If a tool rejects arguments, fix the
 arguments and retry; do not conclude the data is unavailable without a valid call.
 Do not substitute the project `shipyard` for questions about all project crews.
-Inventory questions listing all projects use `limit:20`. Attention counts
-measure evidence items, never people or crew members. A missing crew report
+Inventory questions listing all projects use `limit:20`.
+Returned row counts come from the length of `items`; inventory summary totals
+can include rows omitted by the limit. `truncated` and `remaining` describe
+omitted rows, not returned rows. Use existing requested tool results before
+fetching again unless fresh evidence or different scope is needed.
+Attention counts measure evidence items, never people or crew members. A missing crew report
 means crew health is unknown; never turn null attention into zero.
 Examples of minimal calls:
 - "Is Starbird up?" -> ice_query {"report":"services","project":"starbird"}
