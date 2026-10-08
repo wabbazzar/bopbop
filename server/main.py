@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import db
@@ -27,7 +27,6 @@ if REQUIRE_BEARER and not BEARER:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD = REPO_ROOT / "build"
-PUBLIC = REPO_ROOT / "public"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,9 +161,21 @@ def health():
     }
 
 
+@app.get("/api/client")
+def client_config():
+    """Browser connection metadata; no context paths, account IDs, or secrets."""
+    harness = agent_harness()
+    return {
+        "ok": True,
+        "agent_harness": harness,
+        "model": agent_model(harness) or "default",
+        "require_bearer": REQUIRE_BEARER,
+    }
+
+
 # HTTP middleware that disables caching for the PWA shell + service
 # worker + manifest. Hashed `_app/immutable/*` assets keep their default
-# long-cache headers because their filenames change every build.
+# cache headers because their filenames change every build.
 # Implemented as middleware (rather than a StaticFiles subclass) because
 # the html=True root path bypasses StaticFiles.get_response and goes
 # straight to FileResponse, so a get_response override doesn't cover "/".
@@ -180,14 +191,16 @@ async def _no_cache_shell(request, call_next):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif path.startswith("/_app/immutable/") and response.status_code == 200:
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
 # PWA serving is feature-flagged. Set BOPBOP_PWA_ENABLED=1 to mount the
-# Svelte build at /. Default is OFF — the PWA is being held until proper
-# tests exist (hydration smoke, send round-trip, persistence-survives-
-# reload, visual regression). The Signal channel and /api/chat stay
-# alive regardless so the agent itself keeps working.
+# Svelte build at /. Default is OFF so Python-only installs need no Node.
+# Run the documented browser gates before enabling or deploying a new build.
 PWA_ENABLED = os.environ.get("BOPBOP_PWA_ENABLED", "0") == "1"
 
 if PWA_ENABLED and BUILD.exists() and (BUILD / "index.html").exists():
@@ -211,8 +224,9 @@ else:
   p{margin:.6rem 0}
 </style>
 </head><body>
-<h1>BopBop PWA — paused</h1>
-<p>Frontend disabled until proper tests are in place.</p>
+<h1>BopBop PWA — not enabled</h1>
+<p>Build with <code>bopbop web build</code>, set
+<code>BOPBOP_PWA_ENABLED=1</code>, and restart the server.</p>
 <p>Signal channel still works — message your number as usual.</p>
 <p>API still works — <code>POST /api/chat</code> with JSON
    <code>{"message":"…"}</code>.</p>

@@ -7,6 +7,7 @@
 #   bopbop pack     install/list/remove context packs (capability bundles)
 #   bopbop local    start the local Ollama terminal agent
 #   bopbop agent    start a selected interactive harness
+#   bopbop web      build / dev / test the optional browser app
 #
 # Installation itself (venv, systemd unit, signal-cli container) is
 # handled by install.sh in the repo root.
@@ -195,6 +196,15 @@ cmd_doctor() {
         fail "server venv missing — run ./install.sh"
     fi
 
+    # The optional PWA is built separately; Python-only installs remain valid.
+    if [[ "${BOPBOP_PWA_ENABLED:-0}" == "1" ]]; then
+        if [[ -f "$REPO_DIR/build/index.html" && -f "$REPO_DIR/build/service-worker.js" ]]; then
+            pass "PWA build present"
+        else
+            fail "PWA enabled but build missing — run: bopbop web build"
+        fi
+    fi
+
     # signal-cli
     local sig_url="${SIGNAL_HTTP_URL:-http://127.0.0.1:8080}"
     local code
@@ -380,6 +390,28 @@ cmd_run() {
     exec "$REPO_DIR/server/.venv/bin/uvicorn" main:app --host 127.0.0.1 --port 8090
 }
 
+cmd_web() {
+    local action="${1:-}"
+    [[ $# -eq 0 ]] || shift
+    command -v npm >/dev/null || { note "Node.js and npm are required for the optional PWA"; exit 1; }
+    case "$action" in
+        build|dev|test) ;;
+        *) note "usage: bopbop web {build | dev | test}"; exit 1 ;;
+    esac
+    cd "$REPO_DIR"
+    if [[ ! -d node_modules ]]; then npm ci; fi
+    case "$action" in
+        build) exec npm run build -- "$@" ;;
+        dev) exec npm run dev -- --host 127.0.0.1 "$@" ;;
+        test)
+            npm run check
+            npm test
+            npm run build
+            exec npm run test:e2e -- "$@"
+            ;;
+    esac
+}
+
 cmd_agent() {
     local harness="${1:-}"
     if [[ -z "$harness" ]]; then
@@ -428,9 +460,10 @@ case "${1:-}" in
     init)   shift; cmd_init "$@" ;;
     doctor) shift; cmd_doctor "$@" ;;
     run)    shift; cmd_run "$@" ;;
+    web)    shift; cmd_web "$@" ;;
     pack)   shift; cmd_pack "$@" ;;
     local|ollama) shift; cmd_agent ollama "$@" ;;
     claude|codex) cmd_agent "$@" ;;
     agent) shift; cmd_agent "$@" ;;
-    *)      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *)      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

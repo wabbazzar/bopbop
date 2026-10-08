@@ -124,6 +124,19 @@ def _build_args(
     return harness, args
 
 
+def _result_preview(value) -> dict:
+    """Bound wrapper tool output before sending it to browser/Signal clients."""
+    if isinstance(value, list):
+        value = "\n".join(
+            block.get("text", "") for block in value
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    if value is None:
+        value = ""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return {"preview": text[:8000], "truncated": len(text) > 8000}
+
+
 def _claude_events(ev: dict) -> list[dict]:
     out: list[dict] = []
     etype = ev.get("type")
@@ -145,6 +158,7 @@ def _claude_events(ev: dict) -> list[dict]:
                         "kind": "tool",
                         "name": block.get("name"),
                         "args": block.get("input"),
+                        "id": block.get("id"),
                     }
                 )
 
@@ -156,7 +170,9 @@ def _claude_events(ev: dict) -> list[dict]:
                     {
                         "kind": "tool_result",
                         "name": block.get("tool_use_id"),
+                        "id": block.get("tool_use_id"),
                         "ok": not block.get("is_error", False),
+                        **_result_preview(block.get("content")),
                     }
                 )
 
@@ -166,6 +182,7 @@ def _claude_events(ev: dict) -> list[dict]:
                 "kind": "done",
                 "cost_usd": ev.get("total_cost_usd"),
                 "duration_ms": ev.get("duration_ms"),
+                "usage": ev.get("usage") or {},
             }
         )
     return out
@@ -185,6 +202,7 @@ def _codex_events(ev: dict, elapsed_ms: int) -> list[dict]:
             {
                 "kind": "tool",
                 "name": item_type,
+                "id": item.get("id"),
                 "args": {
                     key: value
                     for key, value in item.items()
@@ -202,7 +220,9 @@ def _codex_events(ev: dict, elapsed_ms: int) -> list[dict]:
                 {
                     "kind": "tool_result",
                     "name": item.get("id") or item_type,
+                    "id": item.get("id"),
                     "ok": item.get("status") not in {"failed", "error"},
+                    **_result_preview(item.get("aggregated_output", item.get("result"))),
                 }
             )
 
@@ -249,6 +269,7 @@ async def run_turn(
 
     emitted_error = False
     codex_last_message: str | None = None
+    tool_started_ms: dict[str, int] = {}
     try:
         assert proc.stdout is not None
         async for raw in proc.stdout:
@@ -282,6 +303,13 @@ async def run_turn(
                           else _codex_events(ev, elapsed_ms) if harness == "codex"
                           else _claude_events(ev))
             for item in normalized:
+                if harness != "ollama" and item.get("id"):
+                    if item.get("kind") == "tool":
+                        tool_started_ms[item["id"]] = elapsed_ms
+                    elif item.get("kind") == "tool_result":
+                        tool_start = tool_started_ms.pop(item["id"], None)
+                        if tool_start is not None:
+                            item["duration_ms"] = max(0, elapsed_ms - tool_start)
                 emitted_error = emitted_error or item.get("kind") == "error"
                 yield item
 

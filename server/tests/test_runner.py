@@ -184,3 +184,33 @@ def test_codex_turn_emits_only_final_agent_message(monkeypatch):
     assert [e for e in normalized if e["kind"] == "text"] == [
         {"kind": "text", "delta": "Final answer."}
     ]
+
+
+def test_wrapper_durations_follow_tool_ids_when_results_finish_out_of_order(monkeypatch):
+    from types import SimpleNamespace
+    events = [
+        {'type': 'item.started', 'item': {'id': 'a', 'type': 'command_execution'}},
+        {'type': 'item.started', 'item': {'id': 'b', 'type': 'command_execution'}},
+        {'type': 'item.completed', 'item': {'id': 'b', 'type': 'command_execution', 'status': 'completed', 'aggregated_output': 'B'}},
+        {'type': 'item.completed', 'item': {'id': 'a', 'type': 'command_execution', 'status': 'completed', 'aggregated_output': 'A'}},
+        {'type': 'turn.completed', 'usage': {}},
+    ]
+    class Stdout:
+        def __aiter__(self):
+            async def lines():
+                for event in events:
+                    yield (json.dumps(event) + '\n').encode()
+            return lines()
+    class Process:
+        stdout = Stdout()
+        stderr = None
+        returncode = 0
+        async def wait(self): return 0
+    async def subprocess(*args, **kwargs): return Process()
+    clock = iter([0, .1, .2, .6, .9, 1.0])
+    monkeypatch.setenv('BOPBOP_AGENT_HARNESS', 'codex')
+    monkeypatch.setattr(runner.asyncio, 'create_subprocess_exec', subprocess)
+    monkeypatch.setattr(runner, 'time', SimpleNamespace(monotonic=lambda: next(clock)))
+    async def collect(): return [event async for event in runner.run_turn('hello')]
+    results = [event for event in asyncio.run(collect()) if event['kind'] == 'tool_result']
+    assert [(event['id'], event['preview'], event['duration_ms']) for event in results] == [('b', 'B', 400), ('a', 'A', 800)]

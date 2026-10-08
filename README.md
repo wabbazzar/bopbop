@@ -68,6 +68,7 @@ bin/bopbop            local Ollama terminal agent (current directory)
 bin/bopbop local      local Ollama terminal agent, accepts --model/--workspace
 bin/bopbop agent      configured interactive harness
 bin/bopbop agent claude|codex|ollama   choose interactive harness explicitly
+bin/bopbop web build|dev|test   optional PWA build, local development, browser gates
 ```
 
 The shell alias `bopbop` points to `bin/bopbop`, so these commands work from
@@ -242,6 +243,7 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 | `SIGNAL_ACCOUNT` | — | your number, E.164 |
 | `SIGNAL_ALLOWED_USERS` | — | comma-separated allowlist (required) |
 | `BOPBOP_REQUIRE_BEARER` | `0` | gate `/api/chat` with a bearer token |
+| `BOPBOP_PWA_ENABLED` | `0` | serve the optional app after `bopbop web build` |
 
 ## Niceties
 
@@ -258,11 +260,37 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 - **HTTP API**: `POST /api/chat {"message": "..."}` streams NDJSON —
   build any frontend you like on it.
 
+## Browser app (PWA)
+
+The optional Svelte app shares the server's configured Claude, Codex, or Ollama
+harness and installed context packs. It keeps the original character expressions,
+streams Markdown replies, saves a rolling transcript and draft on your device,
+and shows expandable tool calls, token counts, and timing measurements.
+
+```bash
+# Node.js 22+ and npm are needed only to build/develop the browser app.
+npm ci
+bopbop web build
+# Set BOPBOP_PWA_ENABLED=1 in ~/.bopbop/env, then:
+systemctl --user restart bopbop.service
+# Open http://127.0.0.1:8090/
+```
+
+For phone access, use your existing trusted HTTPS private-network/proxy setup.
+With `BOPBOP_REQUIRE_BEARER=1`, enter the access token in the app's Settings;
+it stays in tab session storage, separate from saved history. The offline shell
+shows saved messages but cannot run the agent without the server.
+
+Development: `bopbop web dev` (loopback Vite server, API proxied to port 8090).
+Verification: install Python test dependencies, run
+`npx playwright install chromium webkit`, then `bopbop web test`.
+[PWA setup, architecture, telemetry, and testing](docs/pwa.md).
+
 ## Status / roadmap
 
 Extracted from a personal setup that's been running for a while; the
 public packaging is young. Linux/systemd only for now. Roadmap: macOS
-(launchd), more channels, a reference PWA frontend.
+(launchd), more channels, and PWA voice/image input.
 
 ## License
 
