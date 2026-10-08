@@ -32,7 +32,9 @@ def expression(pose):
     if pose == "rest":
         return ""
     if pose == "wink":
-        return patch("winking", "right-eye", 653, 501, 54, 46)
+        # Align the wink's ink center with the original right pupil; the emote
+        # places this eye slightly farther right and lower than the base face.
+        return patch("winking", "right-eye", 653, 501, 54, 46, tx=72, ty=28)
     layers = patch("laughing", "left-eye", 433, 501, 54, 46)
     layers += patch("laughing", "right-eye", 653, 501, 54, 46)
     if pose in {"grin", "beam"}:
