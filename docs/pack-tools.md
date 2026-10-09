@@ -105,6 +105,14 @@ documentation does not increase prompt tokens or invalidate server sessions.
 Changes to parameter descriptions still change the model schema. Reinstall a
 pack after editing its source bundle to update the installed reference.
 
+In the terminal, these same declarations power live help as soon as `/call`
+contains a complete enabled tool name, even before its arguments form valid
+JSON. F1 switches between compact and full reference, Page Up/Down scrolls, and
+Esc hides help; F1 restores it. The draft and insertion point remain intact.
+New pack tools need no changes to the UI to get this behavior. Builtin tools
+likewise own their reference fields in their declarations in
+`bin/bopbop-local.py`; the UI consumes the runtime's enabled definitions.
+
 ## Explicit calls in terminal chat
 
 ```text

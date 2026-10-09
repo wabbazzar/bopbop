@@ -9,46 +9,14 @@ import sys
 import termios
 import textwrap
 import tty
+import unicodedata
 
 from bopbop_packs import strict_json, validate_arguments
 
 
-WORKSPACE_REFERENCE = {
-    "list_files": {
-        "documentation": "Omit path to list the workspace root. Paths must remain inside the workspace.",
-        "returns": "Sorted names, with / for directories; text capped at 8,000 characters.",
-        "examples": [{"arguments": {}}],
-    },
-    "read_file": {
-        "documentation": "Read UTF-8 text. Paths must remain inside the workspace, including symlink targets.",
-        "returns": "File text capped at 16,000 characters, or ERROR: followed by the failure.",
-        "examples": [{"arguments": {"path": "<path>"}}],
-    },
-    "write_file": {
-        "documentation": "Writes immediately, replacing existing content. The parent directory must exist. Paths must remain inside the workspace.",
-        "returns": "written on success, or ERROR: followed by the failure.",
-        "examples": [{"arguments": {"path": "<path>", "content": "<content>"}}],
-    },
-    "run_command": {
-        "documentation": "Executes immediately with your permissions. Uses shlex argv splitting without a shell; pipes and shell expansion are not interpreted. Timeout: 30 seconds.",
-        "returns": "exit=N followed by the last 12,000 characters of combined stdout/stderr; ERROR: for dispatch failures.",
-        "examples": [{"arguments": {"command": "pwd"}}],
-    },
-}
-
-
 def tool_entries(runtime):
-    entries = []
-    for schema in runtime.tools:
-        definition = schema["function"]
-        name = definition["name"]
-        pack = None
-        if runtime.registry and name in runtime.registry.handlers:
-            pack, definition = runtime.registry.handlers[name]
-        if not pack:
-            definition = {**definition, **WORKSPACE_REFERENCE.get(name, {})}
-        entries.append((definition, pack))
-    return entries
+    """The runtime provides enabled declarations; this UI knows no tool names."""
+    return runtime.tool_definitions
 
 
 def find_tool(runtime, name):
@@ -89,6 +57,41 @@ def safe_text(value):
                    else f"\\x{ord(c):02x}" for c in str(value))
 
 
+def cell_width(char):
+    if unicodedata.category(char) in {"Mn", "Me", "Cf", "Cc"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
+def text_width(value):
+    return sum(cell_width(char) for char in value)
+
+
+def clip_text(value, columns):
+    width, end = 0, 0
+    for index, char in enumerate(value):
+        width += cell_width(char)
+        if width > columns:
+            break
+        end = index + 1
+    return value[:end]
+
+
+def draft_view(value, cursor, columns):
+    """One visible input row, keeping the editing cursor inside the terminal."""
+    columns = max(3, columns)
+    start, used = cursor, 0
+    while start > 0 and used + cell_width(value[start - 1]) <= columns - 2:
+        start -= 1
+        used += cell_width(value[start])
+    marker = "‹" if start else ""
+    rest = value[start:]
+    space = columns - len(marker)
+    clipped = text_width(rest) > space
+    visible = marker + clip_text(rest, space - int(clipped)) + ("›" if clipped else "")
+    return visible, len(marker) + used
+
+
 def clip_line(row, columns):
     """Clip presentation text without counting our ANSI color sequences."""
     visible, pieces = 0, []
@@ -97,8 +100,9 @@ def clip_line(row, columns):
             pieces.append(piece)
         else:
             available = max(0, columns - visible)
-            pieces.append(piece[:available])
-            visible += len(piece[:available])
+            part = clip_text(piece, available)
+            pieces.append(part)
+            visible += text_width(part)
     return "".join(pieces)
 
 
@@ -124,6 +128,50 @@ def example_arguments(definition):
                         prop.get("minimum", 1) if prop["type"] in {"integer", "number"} else
                         False if prop["type"] == "boolean" else f"<{name}>")
     return values
+
+
+def call_tool_name(runtime, draft):
+    """Identify only the tool; unfinished JSON and question text are irrelevant."""
+    parts = draft.split(maxsplit=2)
+    if runtime is None or len(parts) < 2 or parts[0].lower() != "/call":
+        return None
+    try:
+        definition, _ = find_tool(runtime, parts[1])
+    except ValueError:
+        return None
+    return definition["name"]
+
+
+def call_help_lines(runtime, name, display, width):
+    """Compact live reference; expanded help shares reference_lines below."""
+    definition, _ = find_tool(runtime, name)
+    schema = definition["parameters"]
+    lines = [display.ink(f"◆ {name} · call help", "brand")]
+    description = textwrap.wrap(safe_text(definition["description"]), max(12, width))
+    lines.extend(description[:2])
+    if len(description) > 2:
+        lines[-1] = clip_text(lines[-1], max(0, width - 1)) + "…"
+    required = schema.get("required", [])
+    for key, prop in schema.get("properties", {}).items():
+        line = (display.ink(key, "tool") + ": " + display.ink(prop["type"], "model")
+                + display.ink(" · required" if key in required else " · optional", "strong"))
+        constraints = []
+        for field in ("enum", "minimum", "maximum", "maxLength", "default"):
+            if field in prop:
+                constraints.append(f"{field}={json.dumps(prop[field], ensure_ascii=False)}")
+        if constraints:
+            line += " · " + safe_text(" · ".join(constraints))
+        lines.append(line)
+    if not schema.get("properties"):
+        lines.append("No arguments.")
+    example = json.dumps(example_arguments(definition), ensure_ascii=False)
+    lines.append(display.ink("Example", "ok") + "  " + safe_text(f"/call {name} {example}"))
+    result = []
+    for line in lines:
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        result.append(clip_line(line, max(0, width - 1)) + "…"
+                      if text_width(plain) > width else line)
+    return result
 
 
 def reference_lines(runtime, name, display, width=None):

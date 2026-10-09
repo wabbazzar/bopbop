@@ -107,7 +107,8 @@ server session routing as the wrapper harnesses.
 
 In an interactive terminal, typing `/` opens suggestions immediately. Type to
 filter, use ↑/↓ to select, Enter to run, Tab to complete, or Esc to dismiss the
-menu. These commands run locally and do not call the model:
+menu. Help and navigation run locally; `/call` invokes the model only when a
+`:: question` is supplied:
 
 | Command | Action |
 |---|---|
@@ -148,6 +149,18 @@ Browsing never calls a tool or model. Type `/call ` or `/tools ` for tool-name
 suggestions; selecting a `/call` suggestion inserts editable arguments and
 requires another Enter to execute. These commands belong to the local terminal
 harness; browser/Signal chat and wrapper harnesses keep their existing interfaces.
+
+Once you type or select a complete tool name after `/call`, live help shows its
+description, typed parameters, constraints and an example beside your draft.
+It stays available while you edit arguments or a `::` question. **F1** toggles
+the full reference, **Page Up/Down** scrolls help, and **Esc** hides it; **F1**
+restores it. These keys preserve the draft and cursor. Long commands scroll
+horizontally to fit the terminal. All references come from tool declarations;
+help never executes a tool or contacts a model.
+
+The [co-driving tickets](docs/tickets/README.md) track live help, the inspector,
+editor integration and completion-model research, with a user test ride between
+deliveries. Model-generated code suggestions are a later research decision.
 
 #### Reading the trace
 

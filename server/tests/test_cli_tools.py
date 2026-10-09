@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import struct
 import subprocess
@@ -19,7 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'bin'))
 from bopbop_packs import Pack, Registry
-from bopbop_tool_ui import parse_call, reference_lines
+from bopbop_tool_ui import call_help_lines, call_tool_name, draft_view, parse_call, reference_lines, text_width
 
 
 @pytest.fixture
@@ -116,6 +117,167 @@ def test_reference_edits_do_not_invalidate_model_schema_fingerprint(installed):
     document['tools'][0]['examples'] = [{'arguments': {'window': '7d'}}]
     path.write_text(json.dumps(document))
     assert Registry(installed.parents[1], ['test']).fingerprint == fingerprint
+
+
+def test_live_help_reads_new_pack_declarations_without_execution(local, installed):
+    document = json.loads((installed / 'tools.json').read_text())
+    document['tools'].append({
+        'name': 'sample_ping', 'description': 'Fixture documentation owned by the pack.',
+        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        'handler': 'handler.py', 'examples': [{'arguments': {}}],
+    })
+    (installed / 'tools.json').write_text(json.dumps(document))
+    runtime = runtime_for(local, installed)
+    for draft in ('/call sample_ping', '/call sample_ping {', '/call sample_ping {} :: Explain it'):
+        assert call_tool_name(runtime, draft) == 'sample_ping'
+    for draft in ('/call sample', '/call missing {}', '/call read_file {}', '/tools sample_ping'):
+        assert call_tool_name(runtime, draft) is None
+    output = '\n'.join(call_help_lines(runtime, 'sample_ping', local.Display(False), 100))
+    assert 'Fixture documentation owned by the pack.' in output
+    assert 'No arguments.' in output
+    assert '/call sample_ping {}' in output
+    output = '\n'.join(call_help_lines(runtime, 'sample_count', local.Display(False), 100))
+    for value in ('window: string · required', 'limit: integer · optional',
+                  'enum=["24h", "7d"]', 'minimum=1', 'maximum=20', '"limit": 7'):
+        assert value in output
+    assert not (installed / 'called').exists()
+
+
+def test_builtin_reference_is_owned_by_declaration_and_excluded_from_model(local, monkeypatch):
+    definitions = [dict(definition) for definition in local.WORKSPACE_TOOLS]
+    definitions[0]['documentation'] = 'Fresh declaration reference'
+    definitions[0]['examples'] = [{'arguments': {'path': 'new-example'}}]
+    monkeypatch.setattr(local, 'WORKSPACE_TOOLS', definitions)
+    runtime = local.AgentRuntime()
+    assert 'Fresh declaration reference' in '\n'.join(reference_lines(runtime, 'list_files', local.Display(False)))
+    assert 'new-example' in '\n'.join(call_help_lines(runtime, 'list_files', local.Display(False), 100))
+    assert all(set(item['function']) == {'name', 'description', 'parameters'} for item in runtime.tools)
+    assert 'Fresh declaration reference' not in json.dumps(runtime.tools)
+
+
+@pytest.mark.parametrize('cursor', [0, 8, 20, 50, 80])
+def test_draft_view_keeps_unicode_cursor_inside_narrow_terminal(cursor):
+    draft = '/call sample_count ' + 'café漢字 ' * 12
+    visible, column = draft_view(draft, cursor, 30)
+    assert text_width(visible) <= 30
+    assert 0 <= column < 30
+    if cursor:
+        # The character immediately left of the cursor remains visible.
+        assert draft[cursor - 1] in visible
+
+
+class PromptTerminal:
+    """Drive the real prompt in a PTY, observing paints and the submitted draft."""
+    def __init__(self, installed, color):
+        self.master, self.slave = pty.openpty()
+        self.resize(100, 24)
+        self.original = termios.tcgetattr(self.slave)
+        self.output = bytearray()
+        env = {k: v for k, v in os.environ.items() if not k.startswith('BOPBOP_')}
+        program = '''
+import importlib.util,json,pathlib,socket,sys
+sys.path.insert(0,sys.argv[1])
+spec=importlib.util.spec_from_file_location('prompt_under_test',pathlib.Path(sys.argv[1])/'bopbop-local.py')
+local=importlib.util.module_from_spec(spec);sys.modules[spec.name]=local;spec.loader.exec_module(local)
+runtime=local.AgentRuntime(local.Registry(pathlib.Path(sys.argv[2]),['test']), 'test')
+def forbidden(*args,**kwargs): raise AssertionError('help must not execute tools or network calls')
+socket.socket=forbidden;runtime.execute=forbidden;local.chat=forbidden
+try:
+    draft=local.prompt_line(local.Display(sys.argv[3]=='True'),runtime)
+    print('DRAFT_JSON='+json.dumps(draft),flush=True)
+except KeyboardInterrupt:
+    print('CANCELLED',flush=True)
+'''
+        self.process = subprocess.Popen([sys.executable, '-c', program, str(ROOT / 'bin'),
+                                         str(installed.parents[1]), str(color)], stdin=self.slave,
+                                        stdout=self.slave, stderr=self.slave, env=env)
+
+    def resize(self, columns, rows):
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
+
+    def read_until(self, expected):
+        deadline = time.monotonic() + 5
+        while expected not in self.output:
+            if time.monotonic() > deadline:
+                pytest.fail(f'Missing {expected!r}: {bytes(self.output[-1500:])!r}')
+            if select.select([self.master], [], [], .1)[0]:
+                self.output.extend(os.read(self.master, 65536))
+        # Drain the rest of this repaint, including queued input already sent.
+        while select.select([self.master], [], [], .05)[0]:
+            self.output.extend(os.read(self.master, 65536))
+        result = bytes(self.output)
+        self.output.clear()
+        return result
+
+    def paint(self, keys, expected):
+        os.write(self.master, keys)
+        output = self.read_until(expected)
+        frame = output.split(b'\r\x1b[J')[-1].decode('utf-8')
+        return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', frame)
+
+    def close(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+        os.close(self.master)
+        os.close(self.slave)
+
+
+@pytest.mark.parametrize('color', [False, True])
+def test_live_help_preserves_draft_through_paging_hide_resize_and_cursor_edits(installed, color):
+    terminal = PromptTerminal(installed, color)
+    try:
+        terminal.read_until(b'> ')
+        frame = terminal.paint(b'/call sample_count', b'call help')
+        assert 'required' in frame and 'Example' in frame
+        prefix = ' {"window":"24h","project":"café 漢字 :: '
+        frame = terminal.paint(prefix.encode(), b'call help')
+        assert 'call help' in frame  # incomplete JSON does not hide help
+        tail = 'quoted \\"text\\" ' + 'x' * 20 + '"} :: résumé'
+        draft = '/call sample_count' + prefix + tail
+        terminal.paint(tail.encode(), 'résumé'.encode())
+        frame = terminal.paint(b'\x1bOP', b'F1 compact')
+        assert 'Notes' in frame
+        next_frame = terminal.paint(b'\x1b[6~', b'F1 compact')
+        assert next_frame != frame
+        terminal.paint(b'\x1b[5~', b'F1 compact')
+        frame = terminal.paint(b'\x1b', b'\r\x1b[J')
+        assert 'F1' not in frame and 'call help' not in frame
+        terminal.paint(b'\x1b[11~', b'F1 compact')
+        terminal.resize(48, 12)
+        output = terminal.read_until(b'\r\x1b[J')
+        frame = output.split(b'\r\x1b[J')[-1].decode()
+        frame = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', frame)
+        assert all(text_width(row) <= 47 for row in frame.split('\r\n'))
+        assert len(frame.split('\r\n')) <= 12
+        terminal.paint(b'\x1b[F\x1b[D\x1b[D!', b'\r\x1b[J')
+        terminal.paint(b'\x1bOP', b'F1 full reference')
+        terminal.paint(b'?', b'\r\x1b[J')
+        os.write(terminal.master, b'\r')
+        result = terminal.read_until(b'DRAFT_JSON=')
+        submitted = json.loads(result.split(b'DRAFT_JSON=')[-1].split(b'\r\n')[0])
+        assert submitted == draft[:-2] + '!?' + draft[-2:]
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+        assert termios.tcgetattr(terminal.slave) == terminal.original
+        assert not (installed / 'called').exists()
+    finally:
+        terminal.close()
+
+
+def test_interrupt_live_help_restores_terminal_without_dispatch(installed):
+    terminal = PromptTerminal(installed, False)
+    try:
+        terminal.read_until(b'> ')
+        terminal.paint(b'/call sample_count {', b'call help')
+        os.write(terminal.master, b'\x03')
+        terminal.read_until(b'CANCELLED')
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+        assert termios.tcgetattr(terminal.slave) == terminal.original
+        assert not (installed / 'called').exists()
+    finally:
+        terminal.close()
 
 
 def test_manual_workspace_write_accepts_multiline_content(local, tmp_path, monkeypatch):

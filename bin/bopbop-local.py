@@ -26,8 +26,9 @@ import uuid
 from dataclasses import dataclass
 from bopbop_splash import show_banner
 from bopbop_packs import Pack, Registry, context_directory
-from bopbop_tool_ui import (browse_tools, clip_line, color_json, example_arguments, find_tool,
-                            parse_call, safe_text, show_reference, tool_entries)
+from bopbop_tool_ui import (browse_tools, call_help_lines, call_tool_name, clip_line,
+                            color_json, draft_view, example_arguments, find_tool,
+                            parse_call, reference_lines, safe_text, show_reference, tool_entries)
 
 
 SLASH_COMMANDS = (
@@ -90,12 +91,24 @@ def _escape_key(fd: int) -> str:
     if not select.select([fd], [], [], 0.05)[0]:
         return "escape"
     second = os.read(fd, 1)
+    if second == b"O":
+        if not select.select([fd], [], [], 0.05)[0]:
+            return "ignore"
+        return {b"P": "help", b"H": "home", b"F": "end"}.get(os.read(fd, 1), "ignore")
     if second != b"[":
-        return "escape"
-    if not select.select([fd], [], [], 0.05)[0]:
-        return "escape"
-    third = os.read(fd, 1)
-    return {b"A": "up", b"B": "down", b"C": "right", b"D": "left"}.get(third, "escape")
+        return "ignore"
+    sequence = b""
+    while len(sequence) < 8 and select.select([fd], [], [], 0.05)[0]:
+        part = os.read(fd, 1)
+        if not part:
+            break
+        sequence += part
+        if sequence != b"[" and 64 <= part[0] <= 126:
+            break
+    return {b"A": "up", b"B": "down", b"C": "right", b"D": "left",
+            b"5~": "page_up", b"6~": "page_down", b"11~": "help", b"[A": "help",
+            b"H": "home", b"1~": "home", b"F": "end", b"4~": "end",
+            b"3~": "delete"}.get(sequence, "ignore")
 
 
 def _slash_prompt(fd: int, prompt: str, display: Display,
@@ -106,6 +119,12 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
     selected = 0
     menu_visible = True
     prompt_width = len("bopbop> ")
+    help_expanded = False
+    help_hidden = False
+    help_offset = 0
+    help_page = 1
+    active_tool = None
+    last_size = None
 
     def matches() -> list[tuple[str, str]]:
         parts = buffer.split(maxsplit=1)
@@ -118,12 +137,36 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
                 if name.startswith(buffer.lower())] if buffer.startswith("/") else []
 
     def render() -> None:
+        nonlocal active_tool, help_hidden, help_offset, help_expanded, help_page, last_size
+        columns, height = shutil.get_terminal_size((90, 30))
+        last_size = (columns, height)
+        name = call_tool_name(runtime, buffer)
+        if name != active_tool:
+            active_tool = name
+            help_hidden = False
+            help_offset = 0
+            help_expanded = False
         found = matches() if menu_visible else []
         rows = []
         editing_arguments = buffer.startswith("/call ") and " " in buffer[len("/call "):]
-        if menu_visible and buffer.startswith("/") and not editing_arguments:
+        if active_tool and not help_hidden:
+            width = max(1, columns - 3)
+            if help_expanded:
+                docs = reference_lines(runtime, active_tool, display, width=width)
+                if docs and not docs[0]:
+                    docs = docs[1:]
+            else:
+                docs = call_help_lines(runtime, active_tool, display, width)
+            help_page = max(1, min(height - 3, len(docs), height if help_expanded else 10))
+            help_offset = min(help_offset, max(0, len(docs) - help_page))
+            rows = ["  " + clip_line(line, width) for line in docs[help_offset:help_offset + help_page]]
+            mode = "compact" if help_expanded else "full reference"
+            footer = f"F1 {mode} · PgUp/PgDn scroll · Esc hide"
+            if len(docs) > help_page:
+                footer += f" · {help_offset + 1}–{min(help_offset + help_page, len(docs))}/{len(docs)}"
+            rows.append("  " + display.ink(clip_line(footer, width), "muted"))
+        elif menu_visible and buffer.startswith("/") and not editing_arguments:
             if found:
-                columns, height = shutil.get_terminal_size((90, 30))
                 limit = min(7, max(1, height - 4))
                 start = max(0, selected - limit + 1)
                 for index in range(start, min(len(found), start + limit)):
@@ -135,11 +178,12 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
                     rows.append(clip_line(row, max(1, columns - 1)))
             else:
                 rows.append("  " + display.ink("No matching commands", "muted"))
-        sys.stdout.write("\r\x1b[J" + prompt + buffer)
+        visible, cursor_column = draft_view(buffer, cursor, columns - prompt_width - 1)
+        sys.stdout.write("\r\x1b[J" + prompt + visible)
         if rows:
             sys.stdout.write("\r\n" + "\r\n".join(rows))
             sys.stdout.write(f"\x1b[{len(rows)}A")
-        sys.stdout.write("\r" + f"\x1b[{prompt_width + cursor}C")
+        sys.stdout.write("\r" + f"\x1b[{prompt_width + cursor_column}C")
         sys.stdout.flush()
 
     def finish(value: str) -> str:
@@ -149,6 +193,10 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
 
     render()
     while True:
+        if not select.select([fd], [], [], 0.1)[0]:
+            if shutil.get_terminal_size((90, 30)) != last_size:
+                render()
+            continue
         key = os.read(fd, 1)
         if not key:
             raise EOFError
@@ -201,8 +249,22 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
                 cursor = max(0, cursor - 1)
             elif action == "right":
                 cursor = min(len(buffer), cursor + 1)
+            elif action == "home":
+                cursor = 0
+            elif action == "end":
+                cursor = len(buffer)
+            elif action == "delete":
+                buffer = buffer[:cursor] + buffer[cursor + 1:]
+                selected = 0
+            elif action == "help" and active_tool:
+                help_expanded = not help_expanded if not help_hidden else True
+                help_hidden = False
+                help_offset = 0
+            elif action in {"page_up", "page_down"} and active_tool and not help_hidden:
+                help_offset = max(0, help_offset + (help_page if action == "page_down" else -help_page))
             elif action == "escape":
                 menu_visible = False
+                help_hidden = True
         elif key == b"\x01":
             cursor = 0
         elif key == b"\x05":
@@ -262,21 +324,39 @@ def prompt_line(display: Display, runtime: AgentRuntime | None = None) -> str:
         readline.set_startup_hook(None)
 
 
-def tool(name: str, description: str, properties: dict, required: list[str]):
-    return {"type": "function", "function": {"name": name, "description": description,
-        "parameters": {"type": "object", "properties": properties, "required": required}}}
+def tool(name: str, description: str, properties: dict, required: list[str], **reference):
+    """One declaration owns a workspace tool's schema and human reference."""
+    return {"name": name, "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": required},
+            **reference}
 
 
-TOOLS = [
+WORKSPACE_TOOLS = [
     tool("list_files", "List files in the working directory, optionally under a relative subdirectory",
-         {"path": {"type": "string"}}, []),
+         {"path": {"type": "string"}}, [],
+         documentation="Omit path to list the workspace root. Paths must remain inside the workspace.",
+         returns="Sorted names, with / for directories; text capped at 8,000 characters.",
+         examples=[{"arguments": {}}]),
     tool("read_file", "Read a UTF-8 file under the working directory",
-         {"path": {"type": "string"}}, ["path"]),
+         {"path": {"type": "string"}}, ["path"],
+         documentation="Read UTF-8 text. Paths must remain inside the workspace, including symlink targets.",
+         returns="File text capped at 16,000 characters, or ERROR: followed by the failure.",
+         examples=[{"arguments": {"path": "<path>"}}]),
     tool("write_file", "Replace a UTF-8 file under the working directory with exact content",
-         {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+         {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"],
+         documentation="Writes immediately, replacing existing content. The parent directory must exist. Paths must remain inside the workspace.",
+         returns="written on success, or ERROR: followed by the failure.",
+         examples=[{"arguments": {"path": "<path>", "content": "<content>"}}]),
     tool("run_command", "Run an argv command in the working directory, without a shell. Commands have the current user's permissions.",
-         {"command": {"type": "string"}}, ["command"]),
+         {"command": {"type": "string"}}, ["command"],
+         documentation="Executes immediately with your permissions. Uses shlex argv splitting without a shell; pipes and shell expansion are not interpreted. Timeout: 30 seconds.",
+         returns="exit=N followed by the last 12,000 characters of combined stdout/stderr; ERROR: for dispatch failures.",
+         examples=[{"arguments": {"command": "pwd"}}]),
 ]
+
+# Human reference metadata is never added to model requests.
+TOOLS = [{"type": "function", "function": {key: definition[key]
+          for key in ("name", "description", "parameters")}} for definition in WORKSPACE_TOOLS]
 
 
 def confined(workspace: pathlib.Path, rel: str) -> pathlib.Path:
@@ -338,9 +418,17 @@ class AgentRuntime:
     context_dir: pathlib.Path | None = None
 
     @property
+    def tool_definitions(self):
+        entries = [] if self.profile else [(definition, None) for definition in WORKSPACE_TOOLS]
+        if self.registry:
+            entries += [(definition, pack) for pack, definition in self.registry.handlers.values()]
+        return entries
+
+    @property
     def tools(self):
-        native = self.registry.schemas if self.registry else []
-        return native if self.profile else TOOLS + native
+        return [{"type": "function", "function": {key: definition[key]
+                 for key in ("name", "description", "parameters")}}
+                for definition, _ in self.tool_definitions]
 
     def execute(self, workspace, name, arguments):
         if self.registry and name in self.registry.handlers:
