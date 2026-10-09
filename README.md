@@ -123,6 +123,11 @@ menu. Help and navigation run locally; `/call` invokes the model only when a
 Piped input and one-turn prompts still accept slash commands, without the
 interactive suggestion menu.
 
+Outside a suggestion menu, **↑/↓** recalls submitted chat and command lines.
+Moving back down restores your unfinished draft and cursor. History retains up
+to 500 lines for the current CLI session only; recalled lines remain editable
+until you press Enter. Dismiss a suggestion menu with **Esc** to recall history.
+
 ### Choose the evidence yourself
 
 You can bypass model tool discovery when you know what to query:
@@ -157,6 +162,13 @@ the full reference, **Page Up/Down** scrolls help, and **Esc** hides it; **F1**
 restores it. These keys preserve the draft and cursor. Long commands scroll
 horizontally to fit the terminal. All references come from tool declarations;
 help never executes a tool or contacts a model.
+
+After `{`, help follows the parameter at your cursor: `{"rep` narrows the
+parameter list to `report`; `{"report":"he` shows its type, description,
+matching allowed values (such as `"health"`), constraints and matching examples.
+After a comma, it lists parameters you have not supplied yet. Moving the cursor
+back into an earlier argument shows that argument's details again. Whitespace
+between the tool name and `{` is optional. F1 still opens the full reference.
 
 The [co-driving tickets](docs/tickets/README.md) track live help, the inspector,
 editor integration and completion-model research, with a user test ride between

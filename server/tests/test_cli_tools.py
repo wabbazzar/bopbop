@@ -20,7 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'bin'))
 from bopbop_packs import Pack, Registry
-from bopbop_tool_ui import call_help_lines, call_tool_name, draft_view, parse_call, reference_lines, text_width
+from bopbop_tool_ui import argument_focus, call_help_lines, call_tool_name, draft_view, parse_call, reference_lines, text_width
 
 
 @pytest.fixture
@@ -168,28 +168,31 @@ def test_draft_view_keeps_unicode_cursor_inside_narrow_terminal(cursor):
 
 class PromptTerminal:
     """Drive the real prompt in a PTY, observing paints and the submitted draft."""
-    def __init__(self, installed, color):
+    def __init__(self, installed, color, turns=1, history=()):
         self.master, self.slave = pty.openpty()
         self.resize(100, 24)
         self.original = termios.tcgetattr(self.slave)
         self.output = bytearray()
         env = {k: v for k, v in os.environ.items() if not k.startswith('BOPBOP_')}
         program = '''
-import importlib.util,json,pathlib,socket,sys
+import importlib.util,json,pathlib,readline,socket,sys
 sys.path.insert(0,sys.argv[1])
 spec=importlib.util.spec_from_file_location('prompt_under_test',pathlib.Path(sys.argv[1])/'bopbop-local.py')
 local=importlib.util.module_from_spec(spec);sys.modules[spec.name]=local;spec.loader.exec_module(local)
 runtime=local.AgentRuntime(local.Registry(pathlib.Path(sys.argv[2]),['test']), 'test')
 def forbidden(*args,**kwargs): raise AssertionError('help must not execute tools or network calls')
 socket.socket=forbidden;runtime.execute=forbidden;local.chat=forbidden
+readline.clear_history()
+for line in json.loads(sys.argv[4]): readline.add_history(line)
 try:
-    draft=local.prompt_line(local.Display(sys.argv[3]=='True'),runtime)
-    print('DRAFT_JSON='+json.dumps(draft),flush=True)
+    for _ in range(int(sys.argv[5])):
+        draft=local.prompt_line(local.Display(sys.argv[3]=='True'),runtime)
+        print('DRAFT_JSON='+json.dumps(draft),flush=True)
 except KeyboardInterrupt:
     print('CANCELLED',flush=True)
 '''
         self.process = subprocess.Popen([sys.executable, '-c', program, str(ROOT / 'bin'),
-                                         str(installed.parents[1]), str(color)], stdin=self.slave,
+                                         str(installed.parents[1]), str(color), json.dumps(history), str(turns)], stdin=self.slave,
                                         stdout=self.slave, stderr=self.slave, env=env)
 
     def resize(self, columns, rows):
@@ -275,6 +278,101 @@ def test_interrupt_live_help_restores_terminal_without_dispatch(installed):
         terminal.process.wait(timeout=5)
         assert terminal.process.returncode == 0
         assert termios.tcgetattr(terminal.slave) == terminal.original
+        assert not (installed / 'called').exists()
+    finally:
+        terminal.close()
+
+
+@pytest.mark.parametrize('suffix,mode,key,prefix,used', [
+    ('{', 'key', '', '', set()),
+    ('{"wi', 'key', '', 'wi', set()),
+    ('{"window":', 'value', 'window', '', set()),
+    ('{"window":"7', 'value', 'window', '7', set()),
+    ('{"window":"7d", "li', 'key', '', 'li', {'window'}),
+    ('{"limit":1', 'value', 'limit', '1', set()),
+    ('{"project":"brace } comma , colon :: quote \\" x', 'value', 'project', 'brace } comma , colon :: quote " x', set()),
+    ('{"project":["nested, value"], "wi', 'key', '', 'wi', {'project'}),
+])
+def test_argument_focus_tolerates_partial_json(suffix, mode, key, prefix, used):
+    assert argument_focus('/call sample_count' + suffix) == (mode, key, prefix, frozenset(used))
+
+
+def test_parameter_help_filters_keys_values_and_uses_cursor(local, installed):
+    runtime = runtime_for(local, installed)
+    def help_for(suffix, cursor=None):
+        return '\n'.join(call_help_lines(runtime, 'sample_count', local.Display(False), 100,
+                                         '/call sample_count ' + suffix, cursor))
+    assert 'Observation window' in help_for('{"wi')
+    assert 'limit:' not in help_for('{"wi')
+    text = help_for('{"window":"7')
+    assert 'Matching values: "7d"' in text
+    assert '"24h"' not in text
+    assert 'window:' not in help_for('{"window":"7d", ')
+    text = help_for('{"window":"24h", "li')
+    assert 'minimum: 1' in text and 'maximum: 20' in text and '"limit": 7' in text
+    assert 'No matching parameters' in help_for('{"nonexistent')
+    draft = '/call sample_count {"window":"7d","limit":2} :: question'
+    cursor = draft.index('7d') + 1
+    assert argument_focus(draft, cursor)[:3] == ('value', 'window', '7')
+    assert argument_focus(draft) is None
+    assert call_tool_name(runtime, '/call sample_count{') == 'sample_count'
+    assert parse_call('sample_count{"window":"7d"}', runtime) == ('sample_count', {'window':'7d'}, None)
+
+
+def test_live_filtered_help_and_history_restore_exact_draft(installed):
+    previous = '/call sample_count {"window":"24h","limit":7}'
+    terminal = PromptTerminal(installed, False, history=['Earlier question', previous])
+    try:
+        terminal.read_until(b'> ')
+        frame = terminal.paint(b'/call sample_count{"wi', b'Observation window')
+        assert 'limit:' not in frame
+        frame = terminal.paint(b'ndow":"7', b'Matching values')
+        assert '"7d"' in frame and '"24h"' not in frame
+        draft = '/call sample_count{"window":"7'
+        frame = terminal.paint(b'\x1b[A', previous.encode())
+        assert 'call help' in frame
+        terminal.paint(b'\x1b[A', b'Earlier question')
+        terminal.paint(b'\x1b[B', previous.encode())
+        frame = terminal.paint(b'\x1b[B', b'Matching values')
+        assert draft in frame
+        os.write(terminal.master, b'd"}\r')
+        output = terminal.read_until(b'DRAFT_JSON=')
+        submitted = json.loads(output.split(b'DRAFT_JSON=')[-1].split(b'\r\n')[0])
+        assert submitted == draft + 'd"}'
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+        assert not (installed / 'called').exists()
+        assert termios.tcgetattr(terminal.slave) == terminal.original
+    finally:
+        terminal.close()
+
+
+def test_history_remembers_chat_and_slash_lines_and_restores_unsent_text(installed):
+    terminal = PromptTerminal(installed, False, turns=4)
+    try:
+        terminal.read_until(b'> ')
+        terminal.paint('Explain café 漢字\r'.encode(), b'DRAFT_JSON=')
+        command = '/call sample_count {"window":"24h"}'
+        terminal.paint((command + '\r').encode(), b'DRAFT_JSON=')
+        terminal.paint(b'unsent draft', b'unsent draft')
+        terminal.paint(b'\x1b[A', command.encode())
+        terminal.paint(b'\x1b[A', 'Explain café 漢字'.encode())
+        terminal.paint(b'\x1b[B', command.encode())
+        terminal.paint(b'\x1b[B', b'unsent draft')
+        os.write(terminal.master, b'\r')
+        result = terminal.read_until(b'DRAFT_JSON=')
+        assert b'DRAFT_JSON="unsent draft"' in result
+        # Blank-prompt recall inserts a command for editing, without submitting it.
+        terminal.paint(b'\x1b[A', b'unsent draft')
+        terminal.paint(b'\x1b[A', command.encode())
+        frame = terminal.paint(b'\x1b[D\x1b[D', b'Matching values')
+        assert 'Observation window' in frame
+        os.write(terminal.master, b'\x1b[F\r')
+        output = terminal.read_until(b'DRAFT_JSON=')
+        submitted = json.loads(output.split(b'DRAFT_JSON=')[-1].split(b'\r\n')[0])
+        assert submitted == command
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
         assert not (installed / 'called').exists()
     finally:
         terminal.close()

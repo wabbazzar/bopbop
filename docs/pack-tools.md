@@ -109,9 +109,20 @@ In the terminal, these same declarations power live help as soon as `/call`
 contains a complete enabled tool name, even before its arguments form valid
 JSON. F1 switches between compact and full reference, Page Up/Down scrolls, and
 Esc hides help; F1 restores it. The draft and insertion point remain intact.
+Inside the argument object, compact help filters parameter names by the prefix
+at the cursor and omits parameters already supplied before it. A single match
+shows its description, type, required flag, constraints and relevant examples;
+while entering its value, enums and examples narrow by the value prefix.
+Moving the cursor back into a parameter restores its details. The full F1
+reference remains unfiltered. This works even with `{` touching the tool name.
 New pack tools need no changes to the UI to get this behavior. Builtin tools
 likewise own their reference fields in their declarations in
 `bin/bopbop-local.py`; the UI consumes the runtime's enabled definitions.
+
+Up/Down recalls submitted chat and command lines when no suggestion menu is
+open. Recall restores live help without running the tool; moving down to the
+current line restores the unfinished draft. This input history is kept only
+for the current CLI process (up to 500 lines).
 
 ## Explicit calls in terminal chat
 

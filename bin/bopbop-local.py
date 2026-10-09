@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass
 from bopbop_splash import show_banner
 from bopbop_packs import Pack, Registry, context_directory
-from bopbop_tool_ui import (browse_tools, call_help_lines, call_tool_name, clip_line,
+from bopbop_tool_ui import (argument_focus, browse_tools, call_help_lines, call_tool_name, clip_line,
                             color_json, draft_view, example_arguments, find_tool,
                             parse_call, reference_lines, safe_text, show_reference, tool_entries)
 
@@ -112,10 +112,10 @@ def _escape_key(fd: int) -> str:
 
 
 def _slash_prompt(fd: int, prompt: str, display: Display,
-                  runtime: AgentRuntime | None = None) -> str | None:
-    """Edit a slash command below the prompt; None returns to normal input."""
-    buffer = "/"
-    cursor = 1
+                  runtime: AgentRuntime | None = None, initial: str = "/") -> str:
+    """Edit a line with tool help, command menus and shared session history."""
+    buffer = initial
+    cursor = len(buffer)
     selected = 0
     menu_visible = True
     prompt_width = len("bopbop> ")
@@ -125,6 +125,10 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
     help_page = 1
     active_tool = None
     last_size = None
+    last_focus = None
+    history = [readline.get_history_item(index) for index in range(1, readline.get_current_history_length() + 1)]
+    history_index = len(history)
+    history_edits = {}
 
     def matches() -> list[tuple[str, str]]:
         parts = buffer.split(maxsplit=1)
@@ -137,7 +141,7 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
                 if name.startswith(buffer.lower())] if buffer.startswith("/") else []
 
     def render() -> None:
-        nonlocal active_tool, help_hidden, help_offset, help_expanded, help_page, last_size
+        nonlocal active_tool, help_hidden, help_offset, help_expanded, help_page, last_size, last_focus
         columns, height = shutil.get_terminal_size((90, 30))
         last_size = (columns, height)
         name = call_tool_name(runtime, buffer)
@@ -146,6 +150,10 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
             help_hidden = False
             help_offset = 0
             help_expanded = False
+        focus = argument_focus(buffer, cursor) if name else None
+        if focus != last_focus:
+            help_offset = 0
+            last_focus = focus
         found = matches() if menu_visible else []
         rows = []
         editing_arguments = buffer.startswith("/call ") and " " in buffer[len("/call "):]
@@ -156,7 +164,7 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
                 if docs and not docs[0]:
                     docs = docs[1:]
             else:
-                docs = call_help_lines(runtime, active_tool, display, width)
+                docs = call_help_lines(runtime, active_tool, display, width, buffer, cursor)
             help_page = max(1, min(height - 3, len(docs), height if help_expanded else 10))
             help_offset = min(help_offset, max(0, len(docs) - help_page))
             rows = ["  " + clip_line(line, width) for line in docs[help_offset:help_offset + help_page]]
@@ -189,6 +197,10 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
     def finish(value: str) -> str:
         sys.stdout.write("\r\x1b[J" + prompt + value + "\r\n")
         sys.stdout.flush()
+        if value.strip() and (not history or history[-1] != value):
+            readline.add_history(value)
+            if readline.get_current_history_length() > 500:
+                readline.remove_history_item(0)
         return value
 
     render()
@@ -228,8 +240,6 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
                 buffer = buffer[:cursor - 1] + buffer[cursor:]
                 cursor -= 1
                 selected = 0
-                if not buffer:
-                    return None
         elif key == b"\t":
             found = matches()
             if found:
@@ -241,10 +251,20 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
         elif key == b"\x1b":
             action = _escape_key(fd)
             found = matches() if menu_visible else []
-            if action == "up" and found:
+            selecting = bool(found) and not (active_tool and not help_hidden)
+            if action == "up" and selecting:
                 selected = (selected - 1) % len(found)
-            elif action == "down" and found:
+            elif action == "down" and selecting:
                 selected = (selected + 1) % len(found)
+            elif action in {"up", "down"}:
+                history_edits[history_index] = (buffer, cursor)
+                history_index = max(0, min(len(history), history_index + (-1 if action == "up" else 1)))
+                buffer, cursor = history_edits.get(history_index, (
+                    history[history_index] if history_index < len(history) else "",
+                    len(history[history_index]) if history_index < len(history) else 0))
+                selected = 0
+                menu_visible = False
+                help_hidden = False
             elif action == "left":
                 cursor = max(0, cursor - 1)
             elif action == "right":
@@ -269,6 +289,17 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
             cursor = 0
         elif key == b"\x05":
             cursor = len(buffer)
+        elif key == b"\x15":
+            buffer, cursor, selected = buffer[cursor:], 0, 0
+        elif key == b"\x0b":
+            buffer, selected = buffer[:cursor], 0
+        elif key == b"\x17":
+            start = cursor
+            while start and buffer[start - 1].isspace():
+                start -= 1
+            while start and not buffer[start - 1].isspace():
+                start -= 1
+            buffer, cursor, selected = buffer[:start] + buffer[cursor:], start, 0
         elif 32 <= key[0] < 127:
             buffer = buffer[:cursor] + key.decode("ascii") + buffer[cursor:]
             cursor += 1
@@ -286,42 +317,17 @@ def _slash_prompt(fd: int, prompt: str, display: Display,
 
 
 def prompt_line(display: Display, runtime: AgentRuntime | None = None) -> str:
-    """Read ordinary text with readline; show a menu as soon as `/` is typed."""
+    """One editor for chat and slash commands, including recalled tool drafts."""
     prompt = display.ink("bopbop", "brand") + "> "
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return input(prompt)
     fd = sys.stdin.fileno()
     previous = termios.tcgetattr(fd)
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
     try:
         tty.setraw(fd, termios.TCSANOW)
-        first = os.read(fd, 1)
-        if first == b"/":
-            slash_result = _slash_prompt(fd, prompt, display, runtime)
-        else:
-            slash_result = None
+        return _slash_prompt(fd, prompt, display, runtime, initial="")
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, previous)
-    if first == b"/" and slash_result is not None:
-        return slash_result
-    if first in (b"\r", b"\n"):
-        sys.stdout.write("\r\n")
-        return ""
-    if first == b"\x03":
-        sys.stdout.write("^C\r\n")
-        raise KeyboardInterrupt
-    if first == b"\x04" or not first:
-        raise EOFError
-    initial = "" if first == b"/" else first.decode("utf-8", errors="replace")
-    sys.stdout.write("\r\x1b[2K")
-    sys.stdout.flush()
-    if initial:
-        readline.set_startup_hook(lambda: readline.insert_text(initial))
-    try:
-        return input(prompt)
-    finally:
-        readline.set_startup_hook(None)
 
 
 def tool(name: str, description: str, properties: dict, required: list[str], **reference):

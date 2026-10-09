@@ -30,12 +30,15 @@ def parse_call(text, runtime):
     """NAME [JSON object] [:: question]; delimiters within JSON are data."""
     if len(text.encode()) > 65536:
         raise ValueError("Tool request exceeds 64 KB")
-    pieces = text.strip().split(maxsplit=1)
-    if not pieces:
+    text = text.strip()
+    if not text:
         raise ValueError('Usage: /call TOOL {"argument":"value"} [:: question]')
-    name = pieces[0]
+    head = re.match(r'([a-z][a-z0-9_]*)(?=\s|[\[{]|::|$)', text)
+    if not head:
+        raise ValueError('Usage: /call TOOL {"argument":"value"} [:: question]')
+    name = head[1]
     definition, pack = find_tool(runtime, name)
-    rest = pieces[1].lstrip() if len(pieces) > 1 else ""
+    rest = text[head.end():].lstrip()
     arguments = {}
     if rest and not rest.startswith("::"):
         # Decode only the JSON prefix, so quoted `::` never splits a value.
@@ -132,21 +135,147 @@ def example_arguments(definition):
 
 def call_tool_name(runtime, draft):
     """Identify only the tool; unfinished JSON and question text are irrelevant."""
-    parts = draft.split(maxsplit=2)
-    if runtime is None or len(parts) < 2 or parts[0].lower() != "/call":
+    head = re.match(r'/call\s+([a-z][a-z0-9_]*)(?=\s|[\[{]|::|$)', draft, re.I)
+    if runtime is None or head is None:
         return None
     try:
-        definition, _ = find_tool(runtime, parts[1])
+        definition, _ = find_tool(runtime, head[1])
     except ValueError:
         return None
     return definition["name"]
 
 
-def call_help_lines(runtime, name, display, width):
+def argument_focus(draft, cursor=None):
+    """Tolerant scan of flat JSON at the cursor, including unfinished strings.
+
+    This never interprets delimiters inside strings as keys or question markers.
+    Nested values remain opaque: protocol v1 tools have scalar parameters.
+    """
+    prefix = draft if cursor is None else draft[:cursor]
+    head = re.match(r'/call\s+[a-z][a-z0-9_]*\s*', prefix, re.I)
+    if not head or not prefix[head.end():].startswith('{'):
+        return None
+    text = prefix[head.end() + 1:]
+    index, key, state, used = 0, '', 'key', set()
+
+    def focus(mode, value=''):
+        return mode, key, value, frozenset(used)
+
+    def string_at(start):
+        end, escaped = start + 1, False
+        while end < len(text):
+            char = text[end]
+            if char == '"' and not escaped:
+                try:
+                    return json.loads(text[start:end + 1]), end + 1, True
+                except ValueError:
+                    return text[start + 1:end], end + 1, True
+            escaped = not escaped if char == '\\' else False
+            end += 1
+        raw = text[start:]
+        try:
+            value = json.loads(raw + '"')
+        except ValueError:
+            value = raw[1:]
+        return value, end, False
+
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index == len(text):
+            return focus('key' if state == 'key' else 'value')
+        if text[index] == '}':
+            return None
+        if state == 'key':
+            if text[index] != '"':
+                return focus('key', text[index:].strip())
+            value, index, closed = string_at(index)
+            if not closed:
+                return focus('key', value)
+            key = value
+            state = 'colon'
+        elif state == 'colon':
+            if text[index] != ':':
+                return focus('key', key)
+            index += 1
+            state = 'value'
+        else:
+            if text[index] == '"':
+                value, index, closed = string_at(index)
+                if not closed:
+                    return focus('value', value)
+            else:
+                start, depth, quoted, escaped = index, 0, False, False
+                while index < len(text):
+                    char = text[index]
+                    if not quoted and depth == 0 and char in ',}':
+                        break
+                    if char == '"' and not escaped:
+                        quoted = not quoted
+                    if not quoted:
+                        depth += int(char in '[{') - int(char in ']}')
+                    escaped = not escaped if char == '\\' else False
+                    index += 1
+                value = text[start:index].strip()
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index == len(text):
+                return focus('value', value)
+            if text[index] == '}':
+                return None
+            if text[index] != ',':
+                return focus('value', value)
+            used.add(key)
+            key, state = '', 'key'
+            index += 1
+
+
+def call_help_lines(runtime, name, display, width, draft=None, cursor=None):
     """Compact live reference; expanded help shares reference_lines below."""
     definition, _ = find_tool(runtime, name)
     schema = definition["parameters"]
     lines = [display.ink(f"◆ {name} · call help", "brand")]
+    focus = argument_focus(draft, cursor) if draft is not None else None
+    props = schema.get('properties', {})
+    if focus and props:
+        mode, key, prefix, used = focus
+        def value_prefix(value):
+            return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        names = ([key] if key in props else []) if mode == 'value' else [
+            name for name in props if name.startswith(prefix) and name not in used]
+        if len(names) == 1:
+            key = names[0]
+            prop = props[key]
+            required = key in schema.get('required', [])
+            lines.append(display.ink(key, 'tool') + ': ' + display.ink(prop['type'], 'model')
+                         + display.ink(' · required' if required else ' · optional', 'strong'))
+            if prop.get('description'):
+                lines.extend(textwrap.wrap(safe_text(prop['description']), max(12, width)))
+            if 'enum' in prop:
+                options = [value for value in prop['enum'] if mode != 'value' or
+                           value_prefix(value).startswith(prefix)]
+                label = 'Matching values' if mode == 'value' and prefix else 'Allowed values'
+                values = ' | '.join(safe_text(json.dumps(value, ensure_ascii=False)) for value in options)
+                lines.extend(textwrap.wrap(f'{label}: {values or "no matches"}', max(12, width)))
+            for field in ('minimum', 'maximum', 'maxLength', 'default'):
+                if field in prop:
+                    lines.append(f'{field}: {safe_text(json.dumps(prop[field], ensure_ascii=False))}')
+            examples = [example for example in definition.get('examples', []) if key in example['arguments']
+                        and (mode != 'value' or not prefix or
+                             value_prefix(example['arguments'][key]).startswith(prefix))]
+            for example in examples[:3]:
+                lines.extend(textwrap.wrap('Example: /call ' + name + ' '
+                    + safe_text(json.dumps(example['arguments'], ensure_ascii=False)), max(12, width)))
+        elif names:
+            lines.append(display.ink('Parameters' + (f' matching {prefix!r}' if prefix else ' available'), 'strong'))
+            for key in names:
+                prop = props[key]
+                lines.append(display.ink(key, 'tool') + ': ' + prop['type']
+                             + (' · required' if key in schema.get('required', []) else ' · optional')
+                             + (' · ' + safe_text(prop['description']) if prop.get('description') else ''))
+        else:
+            lines.append('No matching parameters.' if prefix or mode == 'value' else 'All declared parameters supplied.')
+        return [clip_line(line, width) for line in lines]
     description = textwrap.wrap(safe_text(definition["description"]), max(12, width))
     lines.extend(description[:2])
     if len(description) > 2:
