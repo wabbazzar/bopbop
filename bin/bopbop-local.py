@@ -7,6 +7,7 @@ engine uses the standard library. Tools run as the current user.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import pathlib
@@ -23,7 +24,7 @@ import tty
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from bopbop_splash import show_banner
 from bopbop_packs import Pack, Registry, context_directory
 from bopbop_tool_ui import (argument_focus, browse_tools, call_help_lines, call_tool_name, clip_line,
@@ -422,6 +423,13 @@ class AgentRuntime:
     thinking: str | bool | None = None
     max_output_tokens: int = 2048
     context_dir: pathlib.Path | None = None
+    observer: object = None
+    pruned: list = field(default_factory=list)
+
+    def publish(self, kind, **data):
+        if self.observer:
+            # Queue transports serialize later; freeze mutable messages now.
+            self.observer(copy.deepcopy({'kind': kind, **data}))
 
     @property
     def tool_definitions(self):
@@ -504,6 +512,9 @@ def chat(model: str, messages: list[dict], context: int, step: int,
     host = os.environ.get("BOPBOP_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     request = urllib.request.Request(f"{host}/api/chat",
         data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    runtime.publish('request', request_id=str(uuid.uuid4()), step=step,
+                    payload=json.loads(request.data), removed=runtime.pruned)
+    runtime.pruned = []
     started = time.monotonic()
     progress = {"chunks": 0, "thinking": 0}
     stop = threading.Event()
@@ -533,6 +544,8 @@ def chat(model: str, messages: list[dict], context: int, step: int,
                     # Ollama may send a complete call in the final chunk.
                     calls = piece["tool_calls"]
                 progress["chunks"] += 1
+                runtime.publish('stream', delta=piece.get('content', ''),
+                                chunks=progress['chunks'], thinking_chars=progress['thinking'])
                 if event.get("done"):
                     final = event
                     break
@@ -556,6 +569,7 @@ def chat(model: str, messages: list[dict], context: int, step: int,
         progress["chunks"], progress["thinking"], first_answer,
         final.get("done_reason") == "length",
         "prompt_eval_cached_count" in final)
+    runtime.publish('model_usage', step=step, **asdict(stats))
     return message, stats
 
 
@@ -747,6 +761,9 @@ def run_tool(workspace, name, arguments, display, runtime, usage, emit=None):
     if emit:
         emit({"kind": "tool", "name": name, "args": arguments})
     started = time.monotonic()
+    call_id = str(uuid.uuid4())
+    runtime.publish('tool_start', call_id=call_id, name=name, arguments=arguments,
+                    timestamp=time.time())
     result = runtime.execute(workspace, name, arguments)
     telemetry = {}
     failed = result.startswith("ERROR:") or (result.startswith("exit=") and not result.startswith("exit=0"))
@@ -760,6 +777,9 @@ def run_tool(workspace, name, arguments, display, runtime, usage, emit=None):
         display.event("│    evidence", safe_text(json.dumps(telemetry, ensure_ascii=False)), "muted")
     elapsed = time.monotonic() - started
     usage.tool_calls += 1
+    runtime.publish('tool_complete', call_id=call_id, name=name, arguments=arguments,
+                    result=result, ok=not failed, duration_ms=round(elapsed * 1000),
+                    timestamp=time.time(), telemetry=telemetry)
     display.event("│    ← result", f"{safe_text(result_preview(result))} ({elapsed:.2f}s)",
                   "error" if failed else "ok")
     if emit:
@@ -786,6 +806,7 @@ def direct_call(text, messages, session, model, context, workspace, display, run
         {"function": {"name": name, "arguments": arguments}}]})
     result = run_tool(workspace, name, arguments, display, runtime, usage)
     messages.append({"role": "tool", "tool_name": name, "content": result})
+    runtime.publish('checkpoint', messages=messages)
     usage.wall_s = time.monotonic() - started
     if question:
         answer, usage = turn(model, messages, workspace, context, display,
@@ -813,10 +834,13 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
     for step in range(steps):
         # Remove complete old turns before each model call, preserving pairs.
         budget = min(context * 2, 32768)
+        runtime.pruned = []
         while len(json.dumps(messages).encode()) > budget:
             users = [i for i, m in enumerate(messages) if m.get("role") == "user"]
             if len(users) < 2:
                 break
+            if runtime.observer:
+                runtime.pruned.extend(copy.deepcopy(messages[users[0]:users[1]]))
             del messages[users[0]:users[1]]
         if runtime.profile and len(json.dumps(messages).encode()) > budget:
             usage.wall_s = time.monotonic() - turn_started
@@ -849,6 +873,7 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
         messages.append(message)
         calls = message.get("tool_calls") or []
         if not calls:
+            runtime.publish('checkpoint', messages=messages)
             usage.wall_s = time.monotonic() - turn_started
             display.event("└─ turn", (f"{usage.wall_s:.1f}s"
                 f" · {usage.model_calls} model calls · {usage.tool_calls}"
@@ -874,6 +899,7 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
             args = fn.get("arguments") or {}
             result = run_tool(workspace, name, args, display, runtime, usage, emit)
             messages.append({"role": "tool", "tool_name": name, "content": result})
+        runtime.publish('checkpoint', messages=messages)
     usage.wall_s = time.monotonic() - turn_started
     if emit:
         emit({"kind": "error", "message": f"Stopped after {steps} model steps without a final reply."})

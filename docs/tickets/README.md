@@ -12,7 +12,7 @@ test-ride checkpoint is after ticket 2, before editor integration.
 | Ticket | Deliverable | Status |
 |---|---|---|
 | [1. Live call help](001-live-call-help.md) | Tool-owned docs beside the command being composed | Accepted |
-| [2. Inspector pane](002-inspector-pane.md) | Results, request context and file/diff inspection | In progress; anchored composer then inspector |
+| [2. Inspector pane](002-inspector-pane.md) | Results, request context and file/diff inspection | Implemented; awaiting test ride before ticket 3 |
 | [3. Neovim connection](003-neovim-connection.md) | Selected code → prompt → reviewable edit in the same session | Queued; after ticket 2 test ride |
 | [4. Completion model research](004-completion-model-research.md) | Evaluate models and training objectives for fast code suggestions | Queued; after ticket 3 test ride |
 

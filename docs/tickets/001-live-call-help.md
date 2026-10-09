@@ -1,6 +1,6 @@
 # 1. Live documentation while composing /call
 
-Status: Implemented on 2026-10-09; awaiting user test ride before ticket 2.
+Status: Accepted on 2026-10-09 after parameter filtering and history feedback.
 
 ## Outcome
 

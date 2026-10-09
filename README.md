@@ -112,12 +112,14 @@ dependency, `--ui auto` (the default) uses the classic terminal. The installer
 creates a repo-local `.venv`; the agent engine still needs only Python's standard
 library. Server and wrapper harness dependencies are unchanged.
 
-The managed terminal keeps conversation in its own screen: **F6** focuses it,
+The managed terminal keeps conversation in its own screen: **F6** cycles focus,
 arrow/Page keys scroll, **Ctrl-R** searches backward, and **Esc** returns to input.
 Your terminal's native scrollback contains the startup banner, not this live
 conversation. Model/tools run away from the renderer; you can edit the next
 draft while they work. **Ctrl-C** stops the active turn; completed tool actions
-are not undone. **Ctrl-D** on an empty input exits. The transcript retains a
+are not undone. Completed tool groups are checkpointed; a cancelled partial
+group is not added to conversation, and interrupted results are labeled in the
+inspector. **Ctrl-D** on an empty input exits. The transcript retains a
 bounded display tail in memory and marks evictions; nothing is saved to disk.
 
 In an interactive terminal, typing `/` opens suggestions immediately. Type to
@@ -188,6 +190,59 @@ between the tool name and `{` is optional. F1 still opens the full reference.
 The [co-driving tickets](docs/tickets/README.md) track live help, the inspector,
 editor integration and completion-model research, with a user test ride between
 deliveries. Model-generated code suggestions are a later research decision.
+
+#### Inspecting evidence and context
+
+Run `bopbop local --ui split` to open the inspector immediately, or press **F9**
+in the managed terminal. Below 100 columns, it occupies the conversation area;
+input stays fixed and F9 returns to the conversation.
+
+| Control | Action |
+|---|---|
+| F2 / F3 / F4 / F5 | Tool docs / returned result / exact model request / file or diff |
+| F6 | Cycle input, inspector and conversation focus |
+| F7 | Pin/unpin the current snapshot; new events do not replace a pinned view |
+| Alt-Left / Alt-Right | Previous/next retained snapshot in this view |
+| Alt-`-` / Alt-`+` | Narrow/widen the inspector |
+| Ctrl-R, arrow/Page keys | Search and scroll the focused reader independently |
+| Ctrl-Space, then arrows; F8 | Select body lines and attach them to the next question |
+| Esc | Return to input and close live help |
+
+```text
+/inspect docs ice_query
+/inspect result
+/inspect context
+/inspect file "src/example.py"
+/inspect diff "src/example.py"
+/attach 2:8
+/detach
+```
+
+`/tools NAME` also opens that tool's docs. File paths stay inside the workspace;
+diffs compare a tracked file's working contents with its HEAD version. Each
+snapshot identifies its capture time, source, byte size and SHA256. Reopen a
+file to refresh it. Opening a file or viewing a snapshot sends nothing to the
+model. `/attach START:END` refers to the **numbered body lines**, or F8 uses the
+selection/current body line in the inspector. The transcript confirms the
+source, range and bytes; the footer shows pending attachment totals. These
+selections accompany the next ordinary question or `/call … :: question`.
+A standalone `/call` leaves pending selections intact. `/detach` and `/reset`
+clear pending selections. Attachments are limited to eight selections / 32 KB.
+
+Results contain the complete string returned by the tool dispatcher, with call
+ID, arguments, duration, success/failure and source telemetry. API truncation
+and stale evidence remain visible; the UI cannot recover source-omitted rows.
+Context shows the exact outbound JSON after pruning, including instructions,
+messages, tools and settings. Its metadata below the numbered body records
+removed messages and measured model usage. HTTP headers are not captured.
+Thinking-character/chunk counts describe exposed stream activity, not hidden
+model reasoning or estimated token counts.
+
+Snapshots are held only in memory: up to 32 items / 8 MiB, preserving a pin and
+reporting evictions. Oversized snapshots are rejected with a notice rather than
+presented as complete. File reads are limited to 256 KB. `/reset` clears model
+conversation and pending attachments; retained inspector snapshots remain
+available until eviction or CLI exit. No automatic snapshot export occurs.
 
 #### Reading the trace
 

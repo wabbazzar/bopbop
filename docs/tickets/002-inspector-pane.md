@@ -1,7 +1,7 @@
 # 2. Optional terminal inspector
 
-Status: In progress. Ticket 1 accepted; user authorized both slices without an
-intermediate approval checkpoint.
+Status: Implemented on 2026-10-09; awaiting test ride before ticket 3. The user
+authorized both slices without an intermediate approval checkpoint.
 
 ## Delivery slices
 
@@ -71,7 +71,45 @@ and inspection model independently of terminal widgets.
 
 ## User test ride
 
+The optional renderer is installed on the development machine. Run
+`bopbop local --ui split` or launch `bopbop` and press F9. F2–F5 choose Docs,
+Result, Context and File; F6 changes focus; F7 pins; F8 attaches selected body
+lines. Alt-Left/Right browse retained snapshots; Alt-minus/plus resize the pane.
+Below 100 columns the inspector uses the conversation viewport and F9 toggles
+back. `/inspect file PATH`, `/inspect diff PATH` and `/attach START:END` provide
+equivalent explicit navigation/attachment flows. `/detach` clears attachments.
+
 Run a direct Ice call, pin its full result, ask a follow-up and inspect what was
 sent. Inspect a local file, attach only a selected range, and verify the next
 request. Resize the terminal and continue typing during generation. Commit and
 hand off this build; wait for feedback before ticket 3.
+
+## Implementation and verification
+
+- Slice 1 committed as `ff865fc`: anchored composer and upward overlays, with
+  real terminal tests confirming fixed cursor rows and restored underlying text.
+  Full regression gate at that point: 171 tests passed.
+- `bin/bopbop_tui.py` owns rendering and a cancellable worker process. Worker
+  stdout/stderr is captured inside that process; model streams, checkpoints,
+  tool events and request snapshots reach the renderer through a queue.
+- `bin/bopbop_inspector.py` owns snapshots and retention without importing the UI
+  dependency. Requests freeze the actual serialized HTTP body after pruning.
+  Tool records retain returned content, call IDs, timing and source telemetry.
+- Snapshot limits: 32 records / 8 MiB with pin preservation and eviction notices;
+  files/HEAD versions up to 256 KB; attachments up to eight selections / 32 KB.
+  State is in memory only. File inspection is asynchronous and workspace-bound.
+- Read-only file views and HEAD diffs are implemented; absent/untracked HEAD
+  versions report an error. Editing and model completions remain tickets 3–4.
+- The managed screen uses application scrollback. Native terminal scrollback
+  remains available with `--ui plain`; no optional package is imported by that
+  engine path. Installation is `bopbop ui install` into the root `.venv`.
+- Tests compare snapshots with the fixture server's actual requests, force
+  pruning, check snapshot immutability, tool evidence/source limits, pinned
+  eviction behavior, file versions/diffs, selection-only attachments, live
+  streaming with simultaneous typing, keyboard selection, history, resize,
+  terminal cleanup and cancellation of pack process groups.
+- Final gate: **181 tests passed** across server/pack/CLI/UI suites; one existing
+  Starlette/httpx deprecation warning. Bash syntax and whitespace checks pass.
+  The installed launcher was exercised from `/tmp` with the real Ice reference
+  and parameter help. A real terminal capture with fixture result data was
+  visually inspected at `/tmp/bopbop-inspector-preview.png`.

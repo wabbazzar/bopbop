@@ -126,6 +126,16 @@ for the current CLI process (up to 500 lines).
 
 ## Explicit calls in terminal chat
 
+The optional managed terminal (`bopbop ui install`, then `bopbop local --ui split`)
+also displays these declarations in its Docs inspector. Tool execution publishes
+complete returned results to the Result view, with call IDs, arguments, timings,
+state and source truncation metadata. Context snapshots contain the exact model
+request after pruning. These are local, bounded, in-memory observations; pack
+handlers and model schemas need no UI-specific fields or protocol changes.
+Viewing docs/results/files never calls the model. Only explicit selections
+attached with F8 or `/attach START:END` accompany the next question. See the
+[inspector controls](../README.md#inspecting-evidence-and-context).
+
 ```text
 /tools ice_query
 /call ice_query {"report":"projects","limit":20}
