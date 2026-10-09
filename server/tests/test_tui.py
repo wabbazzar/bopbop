@@ -209,6 +209,44 @@ def test_inspector_keyboard_selection_attaches_body_line(installed, tmp_path):
     finally: terminal.close()
 
 
+@pytest.mark.parametrize('columns', [65, 140])
+def test_vim_reader_navigation_scrolls_viewport_and_preserves_chat_input(installed, tmp_path, columns):
+    (tmp_path / 'long.txt').write_text(''.join(f'row {n:03}\n' for n in range(1, 101)))
+    terminal = ManagedTerminal(installed, tmp_path, mode='split', columns=columns)
+    try:
+        terminal.wait('Ready')
+        terminal.send('/inspect file long.txt\r')
+        terminal.wait('File snapshot ready')
+        terminal.send('draft hjkl gg G')
+        terminal.wait('draft hjkl gg G')
+        terminal.send(b'\x1b[17~')  # F6: reader gets focus
+        terminal.wait('Inspector focused')
+        # First Ctrl-D must move visible content, not just the cursor within it.
+        terminal.send('\x04')
+        terminal.wait('row 025')
+        pane_start = 0 if columns < 100 else 76
+        assert 'File · long.txt' not in terminal.screen.display[2][pane_start:]
+        assert terminal.process.poll() is None  # never the input's Ctrl-D exit
+        terminal.send('\x15')
+        terminal.wait('File · long.txt')
+        terminal.send('G')
+        terminal.wait('Snapshot metadata (not attachment lines)')
+        terminal.send('gg')
+        terminal.wait('File · long.txt')
+        terminal.send('jjjjjj')  # second numbered body line, after file header
+        terminal.send(b'\x1b[19~')
+        terminal.wait('Attached File · long.txt lines 2–2')
+        terminal.send('\x1b')
+        terminal.wait('draft hjkl gg G')
+        terminal.send('\x15')  # Ctrl-U in input still clears the draft
+        terminal.send('chat hjkl gg G')
+        terminal.wait('bopbop> chat hjkl gg G')
+        terminal.send('\x15/exit\r')
+        terminal.process.wait(timeout=5)
+        assert termios.tcgetattr(terminal.slave) == terminal.original
+    finally: terminal.close()
+
+
 def test_cancel_reaps_pack_process_group_and_preserves_editable_draft(installed, tmp_path):
     path = installed / 'handler.py'
     path.write_text('import os,time\nfrom pathlib import Path\nPath("pid").write_text(str(os.getpid()))\ntime.sleep(20)\n')

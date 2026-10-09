@@ -113,3 +113,6 @@ hand off this build; wait for feedback before ticket 3.
   The installed launcher was exercised from `/tmp` with the real Ice reference
   and parameter help. A real terminal capture with fixture result data was
   visually inspected at `/tmp/bopbop-inspector-preview.png`.
+- Test-ride feedback: focused readers now support Vim-style Ctrl-D/U half-page
+  scrolling, Ctrl-F/B full-page scrolling, hjkl, gg/G and 0/$. F6 selects the
+  reader, and its focus is shown in the footer. Chat input bindings are unchanged.

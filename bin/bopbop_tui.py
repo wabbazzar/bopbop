@@ -22,6 +22,9 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.bindings.scroll import (
+    scroll_half_page_down, scroll_half_page_up, scroll_forward, scroll_backward,
+)
 from prompt_toolkit.layout import (Layout, HSplit, VSplit, Window, FloatContainer, Float,
                                    ConditionalContainer, DynamicContainer, Dimension)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
@@ -181,7 +184,7 @@ class TerminalUI:
             Window(FormattedTextControl(self.inspector_header), height=1, style='class:menu'),
             self.inspector, self.inspector_search,
             Window(FormattedTextControl(lambda: [('class:muted',
-                ' Alt-←/→ history · F7 pin · F8 attach · Ctrl-R search')]), height=1),
+                ' Ctrl-D/U scroll · hjkl · gg/G · F7 pin · F8 attach')]), height=1),
         ])
         self.split = VSplit([self.transcript, Window(width=1, char='│', style='class:rule'),
                              HSplit([self.inspector_container], width=self.pane_width)])
@@ -225,6 +228,9 @@ class TerminalUI:
         return [('class:brand', ' ● bopbop  '), ('class:muted', f'{self.args.model} · local agent')]
 
     def footer(self):
+        if self.app.layout.has_focus(self.inspector) or self.app.layout.has_focus(self.transcript):
+            reader = 'Inspector' if self.app.layout.has_focus(self.inspector) else 'Conversation'
+            return [('class:status', f' {reader} focused · {self.notice} · Ctrl-D/U half page · Ctrl-F/B page · hjkl · gg/G · Ctrl-R search · Esc input')]
         state = (f'Working {time.monotonic() - self.started:.1f}s · {self.stream_activity} · Ctrl-C stop'
                  if self.worker else self.notice)
         attachment = f' · {len(self.attachments)} attachments / {sum(a["bytes"] for a in self.attachments)} B' if self.attachments else ''
@@ -615,6 +621,38 @@ class TerminalUI:
 
     def bind_keys(self):
         editing = Condition(lambda: self.app.layout.has_focus(self.input_control))
+        reading = Condition(lambda: self.app.layout.has_focus(self.inspector)
+                            or self.app.layout.has_focus(self.transcript))
+        def scroll_reader(event, handler):
+            window = event.app.layout.current_window
+            before = event.current_buffer.document.cursor_position_row
+            offset = window.vertical_scroll
+            handler(event)
+            # Move the viewport with the cursor, even when the cursor's new
+            # position would still fit on the old page (Vim Ctrl-D/U behavior).
+            moved = event.current_buffer.document.cursor_position_row - before
+            window.vertical_scroll = max(0, offset + moved)
+        for key, handler in [('c-d', scroll_half_page_down), ('c-u', scroll_half_page_up),
+                             ('c-f', scroll_forward), ('c-b', scroll_backward)]:
+            self.keys.add(key, filter=reading)(lambda event, handler=handler: scroll_reader(event, handler))
+        @self.keys.add('j', filter=reading)
+        def down(event): event.current_buffer.cursor_down()
+        @self.keys.add('k', filter=reading)
+        def up(event): event.current_buffer.cursor_up()
+        @self.keys.add('h', filter=reading)
+        def left(event): event.current_buffer.cursor_left()
+        @self.keys.add('l', filter=reading)
+        def right(event): event.current_buffer.cursor_right()
+        @self.keys.add('g', 'g', filter=reading)
+        def top(event): event.current_buffer.cursor_position = 0
+        @self.keys.add('G', filter=reading)
+        def bottom(event): event.current_buffer.cursor_position = len(event.current_buffer.text)
+        @self.keys.add('0', filter=reading)
+        def line_start(event):
+            event.current_buffer.cursor_position += event.current_buffer.document.get_start_of_line_position()
+        @self.keys.add('$', filter=reading)
+        def line_end(event):
+            event.current_buffer.cursor_position += event.current_buffer.document.get_end_of_line_position()
         @self.keys.add('enter', filter=editing)
         def enter(event): self.choose(submit=True)
         @self.keys.add('tab', filter=editing)

@@ -205,8 +205,16 @@ input stays fixed and F9 returns to the conversation.
 | Alt-Left / Alt-Right | Previous/next retained snapshot in this view |
 | Alt-`-` / Alt-`+` | Narrow/widen the inspector |
 | Ctrl-R, arrow/Page keys | Search and scroll the focused reader independently |
+| Ctrl-D / Ctrl-U; Ctrl-F / Ctrl-B | Scroll the focused reader down/up half a page; a full page |
+| `h j k l`, `gg` / `G`, `0` / `$` | Reader cursor movement, start/end of document, start/end of line |
 | Ctrl-Space, then arrows; F8 | Select body lines and attach them to the next question |
 | Esc | Return to input and close live help |
+
+Press F6 to focus the inspector or conversation before using reader motions;
+the footer identifies the focused reader. These are read-only Vim-style
+navigation bindings. Neovim editing belongs to ticket 3. In the chat input,
+letters remain ordinary text, Ctrl-U clears before the cursor, and Ctrl-D on
+empty input exits as before.
 
 ```text
 /inspect docs ice_query
