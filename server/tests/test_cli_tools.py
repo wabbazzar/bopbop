@@ -494,7 +494,7 @@ def test_tool_browser_and_call_suggestions_in_real_terminal(installed, tmp_path)
     env = {k: v for k, v in os.environ.items() if not k.startswith('BOPBOP_')}
     env.update(BOPBOP_OLLAMA_HOST='http://127.0.0.1:1', TERM='xterm-256color')
     env.pop('NO_COLOR', None)
-    process = subprocess.Popen([sys.executable, str(ROOT / 'bin/bopbop-local.py'), '--banner', 'off',
+    process = subprocess.Popen([sys.executable, str(ROOT / 'bin/bopbop-local.py'), '--ui', 'plain', '--banner', 'off',
                                 '--color', 'always', '--workspace', str(tmp_path), '--context-dir',
                                 str(installed.parents[1]), '--packs', 'test'], stdin=slave, stdout=slave,
                                stderr=slave, env=env)

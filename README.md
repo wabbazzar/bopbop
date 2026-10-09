@@ -105,6 +105,21 @@ server session routing as the wrapper harnesses.
 
 #### Slash commands
 
+Install the optional managed terminal with `bopbop ui install`. Subsequent
+`bopbop` launches use an anchored input with upward menus. `--ui single` selects
+it explicitly; `--ui plain` keeps the classic terminal. Without the optional
+dependency, `--ui auto` (the default) uses the classic terminal. The installer
+creates a repo-local `.venv`; the agent engine still needs only Python's standard
+library. Server and wrapper harness dependencies are unchanged.
+
+The managed terminal keeps conversation in its own screen: **F6** focuses it,
+arrow/Page keys scroll, **Ctrl-R** searches backward, and **Esc** returns to input.
+Your terminal's native scrollback contains the startup banner, not this live
+conversation. Model/tools run away from the renderer; you can edit the next
+draft while they work. **Ctrl-C** stops the active turn; completed tool actions
+are not undone. **Ctrl-D** on an empty input exits. The transcript retains a
+bounded display tail in memory and marks evictions; nothing is saved to disk.
+
 In an interactive terminal, typing `/` opens suggestions immediately. Type to
 filter, use ↑/↓ to select, Enter to run, Tab to complete, or Esc to dismiss the
 menu. Help and navigation run locally; `/call` invokes the model only when a

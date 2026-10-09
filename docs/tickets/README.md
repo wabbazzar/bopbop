@@ -5,10 +5,14 @@ test ride, and wait for the user to try it before starting the next ticket.
 Feedback belongs in the current ticket before advancing. These checkpoints are
 requested by the user; a completed implementation does not imply acceptance.
 
+2026-10-09: ticket 1 was accepted. The user authorized automatic progression
+from ticket 2's anchored-composer slice into its inspector slice. The next
+test-ride checkpoint is after ticket 2, before editor integration.
+
 | Ticket | Deliverable | Status |
 |---|---|---|
-| [1. Live call help](001-live-call-help.md) | Tool-owned docs beside the command being composed | Implemented; awaiting user test ride |
-| [2. Inspector pane](002-inspector-pane.md) | Results, request context and file/diff inspection | Queued; after ticket 1 test ride |
+| [1. Live call help](001-live-call-help.md) | Tool-owned docs beside the command being composed | Accepted |
+| [2. Inspector pane](002-inspector-pane.md) | Results, request context and file/diff inspection | In progress; anchored composer then inspector |
 | [3. Neovim connection](003-neovim-connection.md) | Selected code → prompt → reviewable edit in the same session | Queued; after ticket 2 test ride |
 | [4. Completion model research](004-completion-model-research.md) | Evaluate models and training objectives for fast code suggestions | Queued; after ticket 3 test ride |
 

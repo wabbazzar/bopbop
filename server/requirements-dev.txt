@@ -3,3 +3,5 @@
 # (httpx, needed by fastapi's TestClient, is already a runtime dep.)
 -r requirements.txt
 pytest>=8.0
+-r ../requirements-ui.txt
+pyte==0.8.2

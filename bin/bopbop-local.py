@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Experimental BopBop terminal agent using Ollama's native tool calls.
 
-No Codex/Claude harness or extra Python packages. Runs commands as the current
-user, so point --workspace at a directory you trust.
+No Codex/Claude harness. The optional terminal UI uses prompt_toolkit; the
+engine uses the standard library. Tools run as the current user.
 """
 from __future__ import annotations
 
@@ -928,6 +928,8 @@ def main():
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("--banner", choices=("auto", "static", "off"), default="auto",
                         help="startup portrait: animated face, still image, or compact text")
+    parser.add_argument("--ui", choices=("auto", "plain", "single", "split"), default="auto",
+                        help="managed terminal layout (auto when installed); plain needs no UI packages")
     parser.add_argument("--context-dir", type=pathlib.Path, default=context_directory(), help="installed pack context directory")
     parser.add_argument("--profile", default=os.environ.get("BOPBOP_AGENT_PROFILE") or None,
                         help="installed pack name/profile; expose only its tools and context")
@@ -965,6 +967,16 @@ def main():
     display = Display(use_color(args.color))
     messages = [{"role": "system", "content": system_prompt(workspace, runtime)}]
     session = SessionStats()
+    if not args.prompt and sys.stdin.isatty() and sys.stdout.isatty() and args.ui != "plain":
+        try:
+            from bopbop_tui import TerminalUI
+        except ImportError as exc:
+            if args.ui != "auto":
+                parser.error(f"Terminal UI unavailable: {exc}. Run: bopbop ui install")
+        else:
+            display.header(args.model, args.context, workspace, args.banner)
+            TerminalUI(sys.modules[__name__], args, runtime, messages, session).run()
+            return
     display.header(args.model, args.context, workspace, args.banner,
                    interactive=not bool(args.prompt))
     if registry:

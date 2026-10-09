@@ -1,6 +1,16 @@
 # 2. Optional terminal inspector
 
-Status: Queued. Start after ticket 1 is implemented and the user finishes its test ride.
+Status: In progress. Ticket 1 accepted; user authorized both slices without an
+intermediate approval checkpoint.
+
+## Delivery slices
+
+1. Anchored input and upward menus: optional prompt_toolkit renderer, bounded
+   conversation viewport, shared input history, cancellable worker, existing
+   schema-driven help. Verify physical cursor rows and transcript restoration.
+2. Inspector: Result, Context, Docs and File/Diff with explicit attachments,
+   provenance, pinning, navigation and retained-event limits. Continue directly
+   after slice 1 verification; stop for a test ride before ticket 3.
 
 ## Outcome
 

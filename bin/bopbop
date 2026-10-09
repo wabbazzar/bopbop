@@ -459,7 +459,9 @@ cmd_agent() {
         ollama|local)
             # CLI-only additions do not alter the browser/Signal server tools.
             export BOPBOP_AGENT_PACKS="${BOPBOP_CLI_PACKS-${BOPBOP_AGENT_PACKS:-}}"
-            exec python3 "$REPO_DIR/bin/bopbop-local.py" "${args[@]}"
+            local cli_python=python3
+            [[ ! -x "$REPO_DIR/.venv/bin/python" ]] || cli_python="$REPO_DIR/.venv/bin/python"
+            exec "$cli_python" "$REPO_DIR/bin/bopbop-local.py" "${args[@]}"
             ;;
         claude)
             cd "$(context_dir)"
@@ -473,12 +475,25 @@ cmd_agent() {
     esac
 }
 
+cmd_ui() {
+    [[ "${1:-}" == install ]] || { note 'usage: bopbop ui install'; return 1; }
+    if command -v uv >/dev/null; then
+        [[ -x "$REPO_DIR/.venv/bin/python" ]] || uv venv "$REPO_DIR/.venv"
+        uv pip install --python "$REPO_DIR/.venv/bin/python" -r "$REPO_DIR/requirements-ui.txt"
+    else
+        [[ -x "$REPO_DIR/.venv/bin/python" ]] || python3 -m venv "$REPO_DIR/.venv"
+        "$REPO_DIR/.venv/bin/python" -m pip install -r "$REPO_DIR/requirements-ui.txt"
+    fi
+    note 'Terminal UI installed. Run bopbop (or bopbop local --ui plain for the classic CLI).'
+}
+
 case "${1:-}" in
     "")    cmd_agent ollama ;;
     init)   shift; cmd_init "$@" ;;
     doctor) shift; cmd_doctor "$@" ;;
     run)    shift; cmd_run "$@" ;;
     web)    shift; cmd_web "$@" ;;
+    ui)     shift; cmd_ui "$@" ;;
     pack)   shift; cmd_pack "$@" ;;
     local|ollama) shift; cmd_agent ollama "$@" ;;
     claude|codex) cmd_agent "$@" ;;
