@@ -90,6 +90,9 @@ suggestion is in flight. Hand off and await feedback before ticket 4.
   with the managed terminal's existing worker, conversation and inspector.
 - `bopbop editor list`, explicit `--connect SESSION FILE`, and `/editor FILE`
   (adjacent tmux pane, or a copyable launch command for another terminal).
+- `/editor` now opens a live workspace file browser above the fixed CLI input;
+  arrows and Tab navigate folders, typing filters names, and selecting a file
+  previews its first lines. `/help` describes these keys and editor review keys.
 - Bundled Neovim 0.11+ Lua module: exact Visual/line/block explanation selection,
   prompted edits, configurable context-sensitive hints, review, explicit apply,
   discard, retry and cancellation. Narrow terminals stack source/review.

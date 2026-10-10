@@ -98,6 +98,82 @@ def test_managed_prompt_stays_anchored_and_restores_transcript(installed, tmp_pa
     finally: terminal.close()
 
 
+def test_editor_file_reader_browses_filters_previews_and_opens_without_moving_input(installed, tmp_path):
+    folder = tmp_path / 'alpha'
+    folder.mkdir()
+    (folder / 'zeta file.py').write_text('def banana():\n    return 42\n')
+    (folder / 'another.py').write_text('print("other")\n')
+    outside = tmp_path.parent / (tmp_path.name + '-outside.py')
+    outside.write_text('secret outside workspace\n')
+    (tmp_path / 'escape.py').symlink_to(outside)
+    terminal = ManagedTerminal(installed, tmp_path, extra_env={'TMUX': ''})
+    try:
+        terminal.wait('Ready')
+        row = terminal.screen.cursor.y
+        terminal.send('/ed')
+        terminal.wait('Browse workspace files')
+        terminal.send('\t')  # Completing the slash command opens its live file menu.
+        terminal.wait('Files · ./')
+        terminal.send('\x15')
+        terminal.send('/editor')
+        terminal.wait('Files · ./')
+        assert terminal.screen.cursor.y == row
+        terminal.send(' alpha')
+        terminal.wait('▸ alpha/')
+        assert terminal.screen.cursor.y == row
+        terminal.send(b'\x1b[C')  # Right enters the selected directory.
+        terminal.wait('Files · alpha/')
+        assert terminal.screen.cursor.y == row
+        terminal.send(b'\x1b[B')  # Select second file to update the preview.
+        terminal.wait('Preview · zeta file.py')
+        terminal.wait('def banana():')
+        terminal.send(b'\x1b[D')  # Left returns to workspace root.
+        terminal.wait('Files · ./')
+        terminal.send('alpha')
+        terminal.wait('▸ alpha/')
+        terminal.send('\t')
+        terminal.wait('Files · alpha/')
+        terminal.send('zeta')
+        terminal.wait('Preview · zeta file.py')
+        terminal.send('\r')
+        terminal.wait('Run in an adjacent terminal:')
+        assert 'zeta file.py' in terminal.text
+        assert terminal.screen.cursor.y == row
+        terminal.send('/editor escape')
+        terminal.wait('No matches')  # Workspace-exiting symlink is absent.
+        terminal.send('\x1b')
+        terminal.wait('Ready', absent='No matches')
+        terminal.send('\x15/help\r')
+        terminal.wait('◆ editor browser')
+        terminal.wait('<leader>ba apply')
+        terminal.send('/exit\r'); terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+    finally: terminal.close()
+
+
+def test_editor_file_reader_accepts_typed_paths_and_paging(installed, tmp_path):
+    folder = tmp_path / 'many files'
+    folder.mkdir()
+    for index in range(25):
+        (folder / f'file{index:02}.py').write_text(f'print({index})\n')
+    terminal = ManagedTerminal(installed, tmp_path, columns=70, rows=18, extra_env={'TMUX': ''})
+    try:
+        terminal.wait('Ready')
+        row = terminal.screen.cursor.y
+        terminal.send('/editor many files/')
+        terminal.wait('Files · many files/')
+        terminal.send(b'\x1b[6~')  # PageDown scrolls candidates, not the transcript.
+        terminal.wait('file06.py')
+        assert terminal.screen.cursor.y == row
+        terminal.send('\x1b')
+        terminal.wait('Ready', absent='Files · many files/')
+        terminal.send('\x15/editor "many files/file24.py"\r')
+        terminal.wait('Run in an adjacent terminal:')
+        assert 'file24.py' in terminal.text
+        terminal.send('/exit\r'); terminal.process.wait(timeout=5)
+    finally: terminal.close()
+
+
 def test_managed_tool_worker_keeps_draft_and_history_live(installed, tmp_path):
     handler = installed / 'handler.py'
     handler.write_text('import time\ntime.sleep(.6)\n' + handler.read_text())

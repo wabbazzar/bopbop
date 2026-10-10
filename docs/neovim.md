@@ -17,9 +17,20 @@ bridge.
 bopbop local --ui single --workspace .
 ```
 
-In BopBop, run `/editor src/example.py`. Inside **tmux**, this opens a real
-Neovim pane beside BopBop. Outside tmux, it prints a command you can paste into
-an adjacent terminal. Quote paths containing spaces.
+In BopBop, type `/editor` to browse the workspace in a menu above the fixed
+input. **↑/↓** select a folder or file, **→/Tab/Enter** enter a folder, **←**
+returns to its parent, and **Enter** opens a selected file. The selected file
+shows a short preview. Type part of its name to filter, or type `dir/` to
+browse that folder. **PageUp/PageDown** move through longer listings; **Esc**
+closes the menu and restores normal chat history arrows. Hidden names appear
+when you start the filter with `.`. Existing full paths still work:
+`/editor src/example.py`. You can enter a new filename directly. `/help`
+shows the browser and editor review keys.
+
+Inside **tmux**, opening a file starts a real Neovim pane beside BopBop.
+Outside tmux, BopBop prints a command to paste into an adjacent terminal.
+Paths containing spaces work in the browser; quote them if you type a full
+path explicitly.
 
 You can also choose a session explicitly from any directory:
 
@@ -30,8 +41,10 @@ bopbop editor --connect FULL_SESSION_ID /absolute/project/src/example.py
 
 The launcher adds the bundled Lua module to Neovim's runtime path and loads
 your normal editor configuration. It does not modify that configuration.
-`/editor` without a path opens the workspace directory in Neovim. Both existing
-files and named, unsaved new files inside the workspace are supported.
+To open the workspace directory itself, run
+`bopbop editor --connect SESSION /absolute/workspace`. Both existing files and
+named, unsaved new files inside the workspace are supported. Directory listings
+and previews stay local; browsing sends no text to the model.
 
 ## Select → prompt → review
 

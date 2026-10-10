@@ -134,6 +134,7 @@ menu. Help and navigation run locally; `/call` invokes the model only when a
 | `/stats` | Show last-turn and current-session time, tool calls, and tokens |
 | `/tools` | Browse enabled tool references with arrow keys; `/tools NAME` shows one directly |
 | `/call TOOL {JSON} [:: question]` | Execute a tool directly; optionally give its result to the model with a question |
+| `/editor [PATH]` | Browse workspace files above the input and open one in Neovim |
 | `/reset` | Clear conversation and stats, retaining workspace instructions |
 | `/exit` | Leave the agent |
 
@@ -258,6 +259,14 @@ Run `/editor src/example.py` in the managed terminal. In tmux it opens an
 adjacent **real Neovim** pane; elsewhere it prints a command for another terminal.
 Requires Neovim 0.11+. `bopbop editor list` lists live sessions;
 `bopbop editor --connect SESSION /absolute/project/file` connects explicitly.
+
+Type `/editor` to browse the workspace above the input. **↑/↓** move through
+folders and files, **→/Tab/Enter** enter a folder, **←** goes to its parent,
+and **Enter** opens a selected file. A short file preview follows the selected
+row. Type part of a name to filter; adding `/` browses that folder. **Esc**
+closes the browser and restores chat history navigation. The input stays in
+place. A complete path still opens directly, including names with spaces.
+`/help` shows these controls and the Neovim review keys.
 
 Select with **v/V**, then **`<leader>be`** to explain or **`<leader>br`** to
 request an edit. Enter a prompt; the response opens a review split. In the

@@ -35,14 +35,14 @@ from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.widgets import TextArea, SearchToolbar
 
 from bopbop_tool_ui import (argument_focus, call_help_lines, call_tool_name,
-                            example_arguments, find_tool, reference_lines, safe_text,
+                            clip_text, example_arguments, find_tool, reference_lines, safe_text,
                             tool_entries)
 from bopbop_inspector import (InspectorStore, Snapshot, request_snapshot, result_snapshot,
                               file_snapshot, attachment_block)
 from bopbop_editor import EditorBridge, editor_prompt, edit_result
 
 UI_COMMANDS = (
-    ('/editor', 'Connect real Neovim: /editor [workspace file]; tmux opens an adjacent pane'),
+    ('/editor', 'Browse workspace files and open one in connected Neovim'),
     ('/inspect', 'Show docs TOOL, result, context, file PATH, or diff PATH'),
     ('/attach', 'Attach inspector body lines: /attach 1:20'),
     ('/detach', 'Clear pending evidence attachments'),
@@ -181,6 +181,8 @@ class TerminalUI:
         self.file_task = None
         self.pending_tools = {}
         self.editor_bridge = None
+        self.editor_listing_cache = None
+        self.editor_preview_cache = None
         self.inspector_search = SearchToolbar()
         self.inspector = TextArea(text='F2 Docs · F3 Result · F4 Context · F5 File\n'
                                   'Use /inspect file PATH to read a workspace file.\n',
@@ -254,6 +256,8 @@ class TerminalUI:
             return [('class:status', f' {reader} focused · {self.notice} · Ctrl-D/U half page · Ctrl-F/B page · hjkl · gg/G · Ctrl-R search · Esc input')]
         state = (f'Working {time.monotonic() - self.started:.1f}s · {self.stream_activity} · Ctrl-C stop'
                  if self.worker else self.notice)
+        if self.editor_navigation_active():
+            return [('class:status', f' {state} · ↑↓ files · →/Tab enter · ← parent · Enter open · Esc close')]
         attachment = f' · {len(self.attachments)} attachments / {sum(a["bytes"] for a in self.attachments)} B' if self.attachments else ''
         retained = f' · {self.store.notice}' if self.store.notice else ''
         return [('class:status', f' {state}{attachment}{retained}  · F6 focus · F9 pane · Ctrl-D quit')]
@@ -268,6 +272,113 @@ class TerminalUI:
                     if definition['name'].startswith(prefix)]
         return [(name, description) for name, description in (*self.engine.SLASH_COMMANDS, *UI_COMMANDS)
                 if text.startswith('/') and name.startswith(text.lower())]
+
+    def editor_navigation_active(self):
+        return (not self.hidden and not self.recalled and
+                self.app.layout.has_focus(self.input_control) and
+                (self.draft.text == '/editor' or self.draft.text.startswith('/editor ')))
+
+    def editor_navigation(self):
+        """One directory at a time; typed suffix filters names, including unsaved paths."""
+        raw = self.draft.text[len('/editor'):].strip()
+        if raw.startswith(('"', "'")) or '\\ ' in raw:
+            try:
+                parts = shlex.split(raw)
+                raw = parts[0] if len(parts) == 1 else raw
+            except ValueError:
+                raw = raw[1:]  # permit a partially typed quoted path
+        prefix, _, query = raw.rpartition('/')
+        if raw.endswith('/'):
+            prefix, query = raw[:-1], ''
+        base = (self.args.workspace / prefix).resolve() if prefix else self.args.workspace
+        if not base.is_relative_to(self.args.workspace):
+            return base, query, [], 'Outside this workspace'
+        if not base.is_dir():
+            return base, query, [], 'Directory does not exist; Enter opens the typed path'
+        try:
+            modified = base.stat().st_mtime_ns
+            cached = self.editor_listing_cache
+            if cached and cached[:2] == (base, modified):
+                entries = cached[2]
+            else:
+                entries = []
+                with os.scandir(base) as directory:
+                    for entry in directory:
+                        try:
+                            path = pathlib.Path(entry.path)
+                            if path.resolve().is_relative_to(self.args.workspace):
+                                entries.append((entry.name, path, entry.is_dir()))
+                        except OSError:
+                            continue
+                entries.sort(key=lambda item: (not item[2], item[0].casefold(), item[0]))
+                self.editor_listing_cache = (base, modified, entries)
+        except OSError as exc:
+            return base, query, [], f'Cannot read directory: {exc.strerror or exc}'
+        choices = [item for item in entries if (not item[0].startswith('.') or query.startswith('.'))
+                   and query.casefold() in item[0].casefold()]
+        return base, query, choices, None
+
+    def editor_draft_for(self, path, directory=False):
+        relative = path.relative_to(self.args.workspace).as_posix()
+        return '/editor ' + shlex.quote(relative + ('/' if directory else ''))
+
+    def editor_preview(self, path, width):
+        try:
+            stat = path.stat()
+            key = (path, stat.st_mtime_ns, stat.st_size)
+            if self.editor_preview_cache and self.editor_preview_cache[0] == key:
+                lines = self.editor_preview_cache[1]
+            else:
+                with path.open('rb') as source:
+                    raw = source.read(2048)
+                lines = ['Binary file'] if b'\0' in raw else raw.decode('utf-8', 'replace').splitlines()[:3]
+                self.editor_preview_cache = (key, lines)
+            return [clip_text(safe_text(line), width - 4) for line in lines]
+        except (OSError, ValueError):
+            return ['Preview unavailable']
+
+    def editor_popup_lines(self, width):
+        base, query, choices, error = self.editor_navigation()
+        self.selected = min(self.selected, max(0, len(choices) - 1))
+        location = base.relative_to(self.args.workspace).as_posix() if base.is_relative_to(self.args.workspace) else 'outside workspace'
+        rows = [self.display.ink(clip_text(f'Files · {location}/' + (f' · filter {query}' if query else ''), width), 'brand')]
+        capacity = max(1, min(9, self.app.output.get_size().rows - 11))
+        start = max(0, self.selected - capacity + 1)
+        for index in range(start, min(len(choices), start + capacity)):
+            name, _, directory = choices[index]
+            label = f'{"▸" if directory else "·"} {name}{"/" if directory else ""}'
+            rows.append(self.display.ink(clip_text(('› ' if index == self.selected else '  ') + safe_text(label), width),
+                                         'selected' if index == self.selected else 'tool' if directory else 'strong'))
+        if error or not choices:
+            rows.append(self.display.ink(error or 'No matches · Enter opens the typed path', 'muted'))
+        elif choices[self.selected][2]:
+            rows.append(self.display.ink('Folder · → / Tab / Enter to browse', 'muted'))
+        else:
+            path = choices[self.selected][1]
+            rows.append(self.display.ink(clip_text('Preview · ' + path.name, width), 'muted'))
+            rows += [self.display.ink('  ' + line, 'muted') for line in self.editor_preview(path, width)]
+        rows.append(self.display.ink('↑↓ choose · →/Tab browse · ← parent · Enter open · Esc close', 'muted'))
+        return rows
+
+    def choose_editor(self, submit=False):
+        _, _, choices, _ = self.editor_navigation()
+        if not choices:
+            if submit:
+                self.submit()
+            return
+        _, path, directory = choices[min(self.selected, len(choices) - 1)]
+        chosen = self.editor_draft_for(path, directory)
+        self.draft.document = Document(chosen, len(chosen))
+        if submit and not directory:
+            self.submit()
+
+    def editor_parent(self):
+        base, _, _, _ = self.editor_navigation()
+        parent = base.parent if base != self.args.workspace else self.args.workspace
+        if not parent.is_relative_to(self.args.workspace):
+            parent = self.args.workspace
+        chosen = '/editor ' if parent == self.args.workspace else self.editor_draft_for(parent, True)
+        self.draft.document = Document(chosen, len(chosen))
 
     def active_tool(self):
         return call_tool_name(self.runtime, self.draft.text)
@@ -291,6 +402,8 @@ class TerminalUI:
         if self.hidden or not self.app.layout.has_focus(self.input_control):
             return []
         width = max(12, self.app.output.get_size().columns - 4)
+        if self.editor_navigation_active():
+            return self.editor_popup_lines(width)
         name = self.active_tool()
         if name:
             docs = (reference_lines(self.runtime, name, self.display, width) if self.expanded else
@@ -340,9 +453,15 @@ class TerminalUI:
         self.recalled = True
 
     def choose(self, submit=False):
+        if self.editor_navigation_active():
+            self.choose_editor(submit)
+            return
         found = self.matches() if not self.hidden and not self.recalled else []
         if found:
             chosen = found[self.selected][0]
+            if chosen == '/editor':
+                self.draft.document = Document('/editor ', len('/editor '))
+                return
             if chosen in {'/call', '/tools'}:
                 self.draft.document = Document(chosen + ' ', len(chosen) + 1)
                 return
@@ -362,7 +481,7 @@ class TerminalUI:
         prompt = self.draft.text.strip()
         if not prompt:
             return
-        if self.worker and prompt.split()[0] not in dict(UI_COMMANDS) and not prompt.startswith('/tools') and prompt != '/exit':
+        if self.worker and prompt.split()[0] not in dict(UI_COMMANDS) and not prompt.startswith('/tools') and prompt not in {'/exit', '/help'}:
             self.notice = 'Still working; draft kept. Ctrl-C stops the active turn.'
             return
         if prompt == '/exit':
@@ -389,10 +508,16 @@ class TerminalUI:
                     self.append(str(exc) + '\n')
             return
         if prompt == '/help':
-            self.append('Inspector: F2 Docs · F3 Result · F4 Context · F5 File · F6 focus\n'
-                        'F7 pin · F8 attach selected body lines · F9 toggle pane\n'
-                        'Alt-Left/Right snapshots · Alt-−/+ resize · Ctrl-Space starts selection\n'
-                        + '\n'.join(f'{name}: {desc}' for name, desc in UI_COMMANDS) + '\n')
+            self.append('◆ commands\n' + '\n'.join(
+                f'  {name:<9} {description}' for name, description in (*self.engine.SLASH_COMMANDS, *UI_COMMANDS))
+                + '\n\n◆ editor browser\n'
+                '  /editor · ↑↓ files · →/Tab enter folder · ← parent · Enter open · Esc close\n'
+                '  Neovim v/V select · <leader>be explain · <leader>br edit\n'
+                '  Review <leader>ba apply · <leader>bd discard\n'
+                '◆ inspector\n'
+                '  F2 Docs · F3 Result · F4 Context · F5 File · F6 focus · F7 pin · F8 attach · F9 pane\n'
+                '  Alt-Left/Right snapshots · Alt-−/+ resize · Ctrl-Space select body lines\n')
+            return
         if prompt == '/reset':
             self.attachments = []
         question = not prompt.startswith('/')
@@ -542,7 +667,7 @@ class TerminalUI:
                     self.file_task = self.app.create_background_task(self.load_file(parts[1], parts[0] == 'diff'))
                 else: raise ValueError('Use /inspect docs TOOL, result, context, file PATH, or diff PATH')
         except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
-            self.append(f'Inspector: {exc}\n')
+            self.append(f'{command}: {exc}\n')
         return True
 
     def toggle_pane(self):
@@ -552,7 +677,7 @@ class TerminalUI:
     def open_editor(self, arg):
         if not self.editor_bridge:
             raise ValueError('Editor bridge unavailable; see startup message')
-        parts = shlex.split(arg)
+        parts = shlex.split(arg) if arg.startswith(('"', "'")) or '\\ ' in arg else ([arg] if arg else [])
         if len(parts) > 1:
             raise ValueError('Use /editor "path with spaces"')
         path = (self.args.workspace / (parts[0] if parts else '.')).resolve()
@@ -734,11 +859,28 @@ class TerminalUI:
         @self.keys.add('down', filter=editing)
         def arrow(event):
             delta = -1 if event.key_sequence[0].key == 'up' else 1
+            if self.editor_navigation_active():
+                choices = self.editor_navigation()[2]
+                if choices:
+                    self.selected = (self.selected + delta) % len(choices)
+                return
             found = self.matches() if not self.hidden and not self.recalled and not self.active_tool() else []
             if found:
                 self.selected = (self.selected + delta) % len(found)
             else:
                 self.history_move(delta)
+        @self.keys.add('right', filter=editing)
+        def editor_right(event):
+            if self.editor_navigation_active():
+                self.choose_editor()
+            else:
+                event.current_buffer.cursor_right()
+        @self.keys.add('left', filter=editing)
+        def editor_left(event):
+            if self.editor_navigation_active():
+                self.editor_parent()
+            else:
+                event.current_buffer.cursor_left()
         @self.keys.add('escape')
         def escape(event):
             self.hidden = True
@@ -752,7 +894,10 @@ class TerminalUI:
         @self.keys.add('pagedown', filter=editing)
         def page(event):
             delta = -6 if event.key_sequence[0].key == 'pageup' else 6
-            if self.active_tool() and not self.hidden:
+            if self.editor_navigation_active():
+                count = len(self.editor_navigation()[2])
+                self.selected = max(0, min(count - 1, self.selected + delta)) if count else 0
+            elif self.active_tool() and not self.hidden:
                 self.help_offset = max(0, self.help_offset + delta)
             else:
                 self.app.layout.focus(self.transcript)
