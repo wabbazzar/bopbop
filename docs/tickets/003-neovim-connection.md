@@ -8,6 +8,31 @@ The user edits in a real Neovim split and sends a selection plus an explicit
 prompt to the current BopBop session. BopBop can explain it or propose a change
 that the user reviews and applies in Neovim.
 
+## Selection and key hints
+
+User direction: Neovim Visual mode is the primary selection mechanism. Preserve
+the visible hotkey guidance introduced in the inspector.
+
+- Support characterwise `v` and linewise `V` selections for explain/edit actions.
+  Selecting text alone sends nothing. Capture the exact selection, including
+  unsaved text, only when the user explicitly submits a question or edit request.
+- Treat blockwise Ctrl-V selections explicitly: explanations may use labeled
+  per-line spans; initially reject blockwise replacement with a clear hint to
+  use `v` or `V`. Never silently replace the rectangle's bounding range.
+- Keep whole-buffer requests a separate explicit action. No active selection
+  must not silently expand the request to the entire file.
+- Show context-sensitive hints in the editor as well as connection status in
+  BopBop. Hints must reflect the actual configured mappings, not hardcoded keys.
+  Include selected file/range/size before submission and show whether the bridge
+  is connected, working or awaiting review.
+- Proposed defaults under `<leader>b`: Visual mode `e` explains and `r` requests
+  an edit; a review buffer offers `a` to apply and `d` to discard; an active
+  request offers `c` to cancel. Make these configurable, scope review actions to
+  the review buffer, and preserve existing user mappings. Do not intercept
+  ordinary Vim movement or selection keys.
+- Retain the selection and prompt if disconnected or submission fails. A model
+  response opens a review; it never applies an edit automatically.
+
 ## Implementation scope
 
 - Connect an adjacent Neovim instance to the same BopBop session through a local
@@ -42,6 +67,10 @@ session identity and context behavior explicit.
   range, send it, inspect the exact request and apply an accepted replacement.
 - Verify unsaved text, Unicode, multiline selections, multiple buffers, version
   conflicts, rejected diffs and undo. A late response cannot overwrite new work.
+- Verify exact characterwise/linewise boundaries, reversed selections and
+  blockwise handling. Confirm the model receives only the explicitly selected
+  evidence plus disclosed session context. Test mapping overrides and verify
+  that hints match the active selection/request/review state.
 - Cancel/disconnect/reconnect without losing the editor buffer or misrouting a
   response to another BopBop session. Cover bridge endpoint cleanup/ownership.
 - Run a real local-model explanation and a small prompted edit, checking the
@@ -50,6 +79,7 @@ session identity and context behavior explicit.
 
 ## User test ride
 
-Open a small function in Neovim, select it, ask BopBop to explain it, then ask for
+Open a small function in Neovim, select it with `v` or `V`, use the visible key
+hints to ask BopBop to explain it, then ask for
 one small change. Inspect the diff, accept it, undo it, and try editing while a
 suggestion is in flight. Hand off and await feedback before ticket 4.
