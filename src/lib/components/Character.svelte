@@ -39,11 +39,11 @@
   ] : facePatches(emote));
 </script>
 
-<!-- Same body clip and wink alignment as assets/cli/pearl.svg and the CLI
-     generator. SVG stays inline so shared raster sources can be loaded once. -->
+<!-- Original CLI artwork and wink alignment. The lower cutout follows the
+     purple body edge, excluding the source card's background and ground shadow. -->
 <svg viewBox="150 230 790 730" class="stage-blob" role="img" aria-label={`BopBop ${emote}`}>
   <defs>
-    <clipPath id="pearl-body"><path d="M 540 266 C 413 266 341 345 277 449 C 204 564 183 646 190 746 C 198 819 214 859 299 881 C 467 902 678 900 820 865 C 882 846 905 792 904 719 C 904 607 862 486 791 384 C 724 294 621 266 540 266 Z" /></clipPath>
+    <clipPath id="pearl-body"><path d="M 540 266 C 413 266 341 345 277 449 C 204 564 183 614 189 680 C 187 764 226 815 300 846 C 366 875 444 884 550 884 C 670 882 747 872 803 841 C 876 802 909 748 904 674 C 900 567 862 486 791 384 C 724 294 621 266 540 266 Z" /></clipPath>
     <radialGradient id="pearl-feather"><stop offset=".8" stop-color="white"/><stop offset="1" stop-color="black"/></radialGradient>
     {#each patches as patch}
       <mask id={`pearl-${patch.region}`} maskUnits="userSpaceOnUse" x="150" y="230" width="790" height="730">
