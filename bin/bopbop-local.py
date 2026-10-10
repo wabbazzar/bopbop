@@ -425,6 +425,8 @@ class AgentRuntime:
     context_dir: pathlib.Path | None = None
     observer: object = None
     pruned: list = field(default_factory=list)
+    review_only: bool = False
+    response_format: object = None
 
     def publish(self, kind, **data):
         if self.observer:
@@ -440,11 +442,15 @@ class AgentRuntime:
 
     @property
     def tools(self):
+        if self.review_only:
+            return []
         return [{"type": "function", "function": {key: definition[key]
                  for key in ("name", "description", "parameters")}}
                 for definition, _ in self.tool_definitions]
 
     def execute(self, workspace, name, arguments):
+        if self.review_only:
+            raise ValueError('Editor review requests cannot execute tools')
         if self.registry and name in self.registry.handlers:
             return json.dumps(self.registry.call(name, arguments), ensure_ascii=False, separators=(",", ":"))
         if self.profile:
@@ -510,6 +516,8 @@ def chat(model: str, messages: list[dict], context: int, step: int,
                "options": {"num_ctx": context, "temperature": 0,
                            "num_predict": runtime.max_output_tokens}, "keep_alive": "10m"}
     host = os.environ.get("BOPBOP_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    if runtime.response_format is not None:
+        payload['format'] = runtime.response_format
     request = urllib.request.Request(f"{host}/api/chat",
         data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
     runtime.publish('request', request_id=str(uuid.uuid4()), step=step,
@@ -843,6 +851,8 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
                 runtime.pruned.extend(copy.deepcopy(messages[users[0]:users[1]]))
             del messages[users[0]:users[1]]
         if runtime.profile and len(json.dumps(messages).encode()) > budget:
+            if runtime.review_only:
+                raise ValueError('Context budget reached; retry with a smaller selection or reset the conversation')
             usage.wall_s = time.monotonic() - turn_started
             answer = "Stopped at the context budget; ask a smaller question or reset the conversation."
             if emit:
@@ -865,6 +875,8 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
         usage.cached_tokens += stats.cached_tokens
         usage.generation_s += stats.generation_s
         if stats.stopped_at_limit:
+            if runtime.review_only:
+                raise ValueError('Generation limit reached; retry with a smaller selection')
             usage.wall_s = time.monotonic() - turn_started
             answer = "Stopped at the generation limit; no completed answer was produced."
             if emit:
@@ -872,6 +884,9 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
             return answer, usage
         messages.append(message)
         calls = message.get("tool_calls") or []
+        if calls and runtime.review_only:
+            messages.pop()
+            raise ValueError('Model requested a tool during editor review; no tool was executed')
         if not calls:
             runtime.publish('checkpoint', messages=messages)
             usage.wall_s = time.monotonic() - turn_started

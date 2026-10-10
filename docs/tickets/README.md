@@ -7,13 +7,16 @@ requested by the user; a completed implementation does not imply acceptance.
 
 2026-10-09: ticket 1 was accepted. The user authorized automatic progression
 from ticket 2's anchored-composer slice into its inspector slice. The next
-test-ride checkpoint is after ticket 2, before editor integration.
+test-ride checkpoint was after ticket 2, before editor integration.
+
+2026-10-10: the user authorized ticket 3 with Visual selection and contextual
+key hints. Ticket 3 is implemented; its test ride is the next checkpoint.
 
 | Ticket | Deliverable | Status |
 |---|---|---|
 | [1. Live call help](001-live-call-help.md) | Tool-owned docs beside the command being composed | Accepted |
-| [2. Inspector pane](002-inspector-pane.md) | Results, request context and file/diff inspection | Implemented; awaiting test ride before ticket 3 |
-| [3. Neovim connection](003-neovim-connection.md) | Selected code → prompt → reviewable edit in the same session | Queued; after ticket 2 test ride |
+| [2. Inspector pane](002-inspector-pane.md) | Results, request context and file/diff inspection | Accepted; editor integration authorized |
+| [3. Neovim connection](003-neovim-connection.md) | Selected code → prompt → reviewable edit in the same session | Implemented; awaiting test ride before ticket 4 |
 | [4. Completion model research](004-completion-model-research.md) | Evaluate models and training objectives for fast code suggestions | Queued; after ticket 3 test ride |
 
 Ticket 4 is research and a contained evaluation, followed by a recommendation.

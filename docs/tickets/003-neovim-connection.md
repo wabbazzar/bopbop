@@ -1,6 +1,6 @@
 # 3. Neovim selection and prompted edit connection
 
-Status: Queued. Start after the ticket 2 test ride.
+Status: Implemented; awaiting the ticket 3 user test ride. Ticket 4 remains queued.
 
 ## Outcome
 
@@ -83,3 +83,32 @@ Open a small function in Neovim, select it with `v` or `V`, use the visible key
 hints to ask BopBop to explain it, then ask for
 one small change. Inspect the diff, accept it, undo it, and try editing while a
 suggestion is in flight. Hand off and await feedback before ticket 4.
+
+## Delivered (2026-10-10)
+
+- Private session-owned Unix socket bridge in `bin/bopbop_editor.py`, integrated
+  with the managed terminal's existing worker, conversation and inspector.
+- `bopbop editor list`, explicit `--connect SESSION FILE`, and `/editor FILE`
+  (adjacent tmux pane, or a copyable launch command for another terminal).
+- Bundled Neovim 0.11+ Lua module: exact Visual/line/block explanation selection,
+  prompted edits, configurable context-sensitive hints, review, explicit apply,
+  discard, retry and cancellation. Narrow terminals stack source/review.
+- Tool-free review turns, structured edit responses, conservative changedtick
+  conflicts, ordinary undo and no implicit file save.
+- [Setup and protocol boundaries](../neovim.md), including ownership, limits,
+  failures, and the distinction between shared history and newly selected code.
+- Real headless Neovim tests cover Unicode (including combining characters),
+  reversed/exclusive/multiline/empty/block selections, user mappings, actual
+  hotkey invocation, unsaved buffers, other buffers, stale edits, apply/discard,
+  undo, cancellation/retry, reconnects, socket ownership and cleanup.
+- End-to-end PTY + fixture model tests verify shared session history, exact
+  selected evidence, model settings, inspector visibility and disabled tools.
+- A real GPT-OSS 20B run explained a function, proposed a constant-return edit,
+  applied it, executed it to check the result, undid it, and verified the
+  original disk file stayed unchanged. Explanation: 26.0 s including 18.9 s
+  model load; next edit: 7.1 s, first answer 4.0 s. These are individual local
+  observations, not latency guarantees; a later preview edit took 18.4 s.
+
+The review is complete at the user's explicit apply/discard action; automatic
+completion research has not started. Test ride the keys and buffer workflow
+before ticket 4.

@@ -189,7 +189,7 @@ between the tool name and `{` is optional. F1 still opens the full reference.
 
 The [co-driving tickets](docs/tickets/README.md) track live help, the inspector,
 editor integration and completion-model research, with a user test ride between
-deliveries. Model-generated code suggestions are a later research decision.
+deliveries. Automatic suggestions while typing are a later research decision.
 
 #### Inspecting evidence and context
 
@@ -212,7 +212,7 @@ input stays fixed and F9 returns to the conversation.
 
 Press F6 to focus the inspector or conversation before using reader motions;
 the footer identifies the focused reader. These are read-only Vim-style
-navigation bindings. Neovim editing belongs to ticket 3. In the chat input,
+navigation bindings. For real editing, use the Neovim connection below. In the chat input,
 letters remain ordinary text, Ctrl-U clears before the cursor, and Ctrl-D on
 empty input exits as before.
 
@@ -251,6 +251,25 @@ reporting evictions. Oversized snapshots are rejected with a notice rather than
 presented as complete. File reads are limited to 256 KB. `/reset` clears model
 conversation and pending attachments; retained inspector snapshots remain
 available until eviction or CLI exit. No automatic snapshot export occurs.
+
+#### Co-driving in Neovim
+
+Run `/editor src/example.py` in the managed terminal. In tmux it opens an
+adjacent **real Neovim** pane; elsewhere it prints a command for another terminal.
+Requires Neovim 0.11+. `bopbop editor list` lists live sessions;
+`bopbop editor --connect SESSION /absolute/project/file` connects explicitly.
+
+Select with **v/V**, then **`<leader>be`** to explain or **`<leader>br`** to
+request an edit. Enter a prompt; the response opens a review split. In the
+review, **`<leader>ba`** applies and **`<leader>bd`** discards. **u** undoes;
+files are never silently saved. The winbar shows the available keys and state.
+**`<leader>bc`** cancels; **`<leader>bt`** retries a retained request.
+
+Selections include unsaved text and use the same conversation/model. These
+focused turns disable tools so a proposed edit cannot bypass review. Changes
+to the original buffer invalidate a proposal. F4 shows the exact model request;
+F3 shows its answer/diff. Existing mappings are preserved and keys configurable.
+See [Neovim setup, keys, boundaries and recovery](docs/neovim.md).
 
 #### Reading the trace
 

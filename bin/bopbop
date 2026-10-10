@@ -8,6 +8,7 @@
 #   bopbop local    start the local Ollama terminal agent
 #   bopbop agent    start a selected interactive harness
 #   bopbop web      build / dev / test the optional browser app
+#   bopbop editor   list sessions / connect Neovim to a local terminal session
 #
 # Installation itself (venv, systemd unit, signal-cli container) is
 # handled by install.sh in the repo root.
@@ -494,9 +495,10 @@ case "${1:-}" in
     run)    shift; cmd_run "$@" ;;
     web)    shift; cmd_web "$@" ;;
     ui)     shift; cmd_ui "$@" ;;
+    editor) shift; exec python3 "$REPO_DIR/bin/bopbop_editor.py" "$@" ;;
     pack)   shift; cmd_pack "$@" ;;
     local|ollama) shift; cmd_agent ollama "$@" ;;
     claude|codex) cmd_agent "$@" ;;
     agent) shift; cmd_agent "$@" ;;
-    *)      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *)      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

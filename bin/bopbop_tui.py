@@ -15,6 +15,8 @@ import re
 import signal
 import shlex
 import time
+import pathlib
+import subprocess
 
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
@@ -37,8 +39,10 @@ from bopbop_tool_ui import (argument_focus, call_help_lines, call_tool_name,
                             tool_entries)
 from bopbop_inspector import (InspectorStore, Snapshot, request_snapshot, result_snapshot,
                               file_snapshot, attachment_block)
+from bopbop_editor import EditorBridge, editor_prompt, edit_result
 
 UI_COMMANDS = (
+    ('/editor', 'Connect real Neovim: /editor [workspace file]; tmux opens an adjacent pane'),
     ('/inspect', 'Show docs TOOL, result, context, file PATH, or diff PATH'),
     ('/attach', 'Attach inspector body lines: /attach 1:20'),
     ('/detach', 'Clear pending evidence attachments'),
@@ -93,7 +97,7 @@ class EventWriter(io.TextIOBase):
         pass
 
 
-def run_worker(engine, args, runtime, messages, session, prompt, events):
+def run_worker(engine, args, runtime, messages, session, prompt, events, editor=None):
     os.setsid()
     def stop(signum, frame):
         # Unwind native pack handlers so their own process groups are reaped.
@@ -116,7 +120,17 @@ def run_worker(engine, args, runtime, messages, session, prompt, events):
                     if not streamed[0]:
                         super().answer(value)
             display = WorkerDisplay(False)
-            if not engine.handle_command(prompt, messages, session, args.model, args.context,
+            if editor:
+                runtime.review_only = True
+                runtime.response_format = ({'type': 'object', 'properties': {
+                    'replacement': {'type': 'string'}, 'summary': {'type': 'string'}},
+                    'required': ['replacement', 'summary']} if editor['action'] == 'edit' else None)
+                messages.append({'role': 'user', 'content': editor_prompt(editor)})
+                answer, usage = engine.turn(args.model, messages, args.workspace, args.context,
+                                            display, runtime=runtime)
+                session.record(usage)
+                send({'kind': 'editor_result', 'result': edit_result(answer, editor)})
+            elif not engine.handle_command(prompt, messages, session, args.model, args.context,
                                           args.workspace, display, runtime):
                 messages.append({'role': 'user', 'content': prompt})
                 answer, usage = engine.turn(args.model, messages, args.workspace, args.context,
@@ -125,8 +139,12 @@ def run_worker(engine, args, runtime, messages, session, prompt, events):
                 display.answer(answer)
     except KeyboardInterrupt:
         send({'kind': 'output', 'text': '\nTurn cancelled.\n'})
+        if editor:
+            send({'kind': 'editor_result', 'error': 'Cancelled; selection and prompt retained'})
     except Exception as exc:
         send({'kind': 'output', 'text': f'\nError: {type(exc).__name__}: {exc}\n'})
+        if editor:
+            send({'kind': 'editor_result', 'error': str(exc)})
     finally:
         send({'kind': 'finished', 'messages': messages, 'session': session})
 
@@ -162,6 +180,7 @@ class TerminalUI:
         self.doc_name = None
         self.file_task = None
         self.pending_tools = {}
+        self.editor_bridge = None
         self.inspector_search = SearchToolbar()
         self.inspector = TextArea(text='F2 Docs · F3 Result · F4 Context · F5 File\n'
                                   'Use /inspect file PATH to read a workspace file.\n',
@@ -225,7 +244,9 @@ class TerminalUI:
                 ('class:muted', 'F2 docs  F3 result  F4 context  F5 file')]
 
     def header(self):
-        return [('class:brand', ' ● bopbop  '), ('class:muted', f'{self.args.model} · local agent')]
+        bridge = (f' · Neovim {self.editor_bridge.state}'
+                  if self.editor_bridge and self.editor_bridge.connected else ' · /editor Neovim')
+        return [('class:brand', ' ● bopbop  '), ('class:muted', f'{self.args.model} · local agent{bridge}')]
 
     def footer(self):
         if self.app.layout.has_focus(self.inspector) or self.app.layout.has_focus(self.transcript):
@@ -501,7 +522,8 @@ class TerminalUI:
         if command not in dict(UI_COMMANDS):
             return False
         try:
-            if command == '/pane': self.toggle_pane()
+            if command == '/editor': self.open_editor(arg)
+            elif command == '/pane': self.toggle_pane()
             elif command == '/pin': self.pin()
             elif command == '/detach':
                 self.attachments = []
@@ -519,7 +541,7 @@ class TerminalUI:
                         raise ValueError('A file snapshot is already loading')
                     self.file_task = self.app.create_background_task(self.load_file(parts[1], parts[0] == 'diff'))
                 else: raise ValueError('Use /inspect docs TOOL, result, context, file PATH, or diff PATH')
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
             self.append(f'Inspector: {exc}\n')
         return True
 
@@ -527,17 +549,51 @@ class TerminalUI:
         self.inspector_visible = not self.inspector_visible
         self.app.layout.focus(self.input_control)
 
-    def start_worker(self, prompt):
+    def open_editor(self, arg):
+        if not self.editor_bridge:
+            raise ValueError('Editor bridge unavailable; see startup message')
+        parts = shlex.split(arg)
+        if len(parts) > 1:
+            raise ValueError('Use /editor "path with spaces"')
+        path = (self.args.workspace / (parts[0] if parts else '.')).resolve()
+        if not path.is_relative_to(self.args.workspace):
+            raise ValueError('File must be inside this session workspace')
+        command = [str(pathlib.Path(__file__).with_name('bopbop')), 'editor', '--connect',
+                   self.editor_bridge.id, str(path)]
+        if os.environ.get('TMUX'):
+            subprocess.run(['tmux', 'split-window', '-h', '-c', str(self.args.workspace),
+                            shlex.join(command)], check=True, capture_output=True)
+            self.notice = 'Neovim opened · select v/V → explain/edit · review before apply'
+        else:
+            self.append('Run in an adjacent terminal:\n' + shlex.join(command) + '\n')
+
+    def submit_editor(self, request):
+        if self.worker:
+            raise ValueError('BopBop is busy; selection and prompt retained. Retry when ready')
+        self.record_snapshot(Snapshot('file', 'Neovim selection · ' + request['path'],
+                                      request['text'], {k: v for k, v in request.items() if k != 'text'}))
+        self.append(f'\n› Neovim {request["action"]}: {request["prompt"]}\n'
+                    f'{request["path"]} · {len(request["text"].encode())} B · shared session · no tools\n')
+        self.start_worker('', editor=request)
+
+    def start_worker(self, prompt, editor=None):
         self.stream_activity = 'starting'
         ctx = multiprocessing.get_context('fork')
         self.events = ctx.Queue()
         self.worker = ctx.Process(target=run_worker, args=(self.engine, self.args, self.runtime,
-                                  self.messages, self.session, prompt, self.events))
+                                  self.messages, self.session, prompt, self.events, editor))
         self.worker.start()
         self.started = time.monotonic()
 
     def receive(self, event):
-        if event['kind'] == 'output':
+        if event['kind'] == 'editor_result':
+            self.editor_bridge.complete(event.get('result'), event.get('error'))
+            result = event.get('result')
+            if result:
+                self.record_snapshot(Snapshot('result', 'Neovim · awaiting review',
+                    result.get('diff', result.get('answer', '')), {'editor': True}))
+                self.append('\nNeovim response ready · review in editor; nothing applied.\n')
+        elif event['kind'] == 'output':
             self.append(event['text'])
         elif event['kind'] == 'finished':
             self.messages, self.session = event['messages'], event['session']
@@ -556,6 +612,8 @@ class TerminalUI:
                     self.stream_started = True
                 self.append(event['delta'])
         elif event['kind'] == 'model_usage':
+            if self.stream_started:
+                self.append('\n')
             item = self.store.items.get(self.last_request_id)
             if item:
                 from dataclasses import replace
@@ -598,12 +656,25 @@ class TerminalUI:
                     {'call_id': call['call_id'], 'arguments': call['arguments'], 'complete': False}))
             self.pending_tools.clear()
             self.notice = 'Cancelled'
+            if self.editor_bridge:
+                self.editor_bridge.complete(error='Cancelled; selection and prompt retained')
             self.append('\nStopped. Completed tool actions are not undone.\n')
         else:
             self.draft.reset()
             self.hidden = True
 
     async def pump(self):
+        try:
+            self.editor_bridge = EditorBridge(self.args.workspace, self.submit_editor, self.cancel, self.args.model,
+                lambda request_id, outcome: self.append(
+                    f'\nNeovim review {request_id[:8]}: {outcome}'
+                    + (' to unsaved buffer.\n' if outcome == 'applied' else '.\n')))
+            await self.editor_bridge.start()
+        except (ValueError, OSError) as exc:
+            if self.editor_bridge:
+                self.editor_bridge.close()
+            self.editor_bridge = None
+            self.append(f'Editor bridge unavailable: {exc}\n')
         while True:
             if self.events:
                 for _ in range(100):
@@ -616,6 +687,8 @@ class TerminalUI:
                         break
                 if self.worker and not self.worker.is_alive() and self.events.empty():
                     self.append('\nWorker exited before completion.\n')
+                    if self.editor_bridge:
+                        self.editor_bridge.complete(error='Worker exited; selection and prompt retained')
                     self.cleanup_worker()
             await asyncio.sleep(.03)
 
@@ -730,3 +803,5 @@ class TerminalUI:
         finally:
             if self.worker:
                 self.cancel()
+            if self.editor_bridge:
+                self.editor_bridge.close()
