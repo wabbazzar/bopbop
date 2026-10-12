@@ -115,3 +115,9 @@ suggestion is in flight. Hand off and await feedback before ticket 4.
 The review is complete at the user's explicit apply/discard action; automatic
 completion research has not started. Test ride the keys and buffer workflow
 before ticket 4.
+
+2026-10-12 test-ride fixes: `/editor` opens Neovim in the current terminal
+outside tmux, while tmux keeps an adjacent pane. Neovim's connection notice
+fits a narrow pane without triggering the hit-enter prompt. BopBop readers
+support mouse selection and clipboard copy (`y` for selection/current line).
+An isolated tmux test verifies the live editor pane and copying from BopBop.

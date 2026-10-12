@@ -5,11 +5,15 @@ import os
 from pathlib import Path
 import pty
 import select
+import shlex
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
+import uuid
 
 import pyte
 import pytest
@@ -136,16 +140,18 @@ def test_editor_file_reader_browses_filters_previews_and_opens_without_moving_in
         terminal.send('zeta')
         terminal.wait('Preview · zeta file.py')
         terminal.send('\r')
-        terminal.wait('Run in an adjacent terminal:')
-        assert 'zeta file.py' in terminal.text
+        terminal.wait('BopBop: Connected')
+        terminal.send(':q!\r')
+        terminal.wait('Back from Neovim')
         assert terminal.screen.cursor.y == row
         terminal.send('/editor escape')
         terminal.wait('No matches')  # Workspace-exiting symlink is absent.
         terminal.send('\x1b')
-        terminal.wait('Ready', absent='No matches')
+        terminal.wait('Back from Neovim', absent='No matches')
         terminal.send('\x15/help\r')
         terminal.wait('◆ editor browser')
         terminal.wait('<leader>ba apply')
+        terminal.wait('Drag in a reader')
         terminal.send('/exit\r'); terminal.process.wait(timeout=5)
         assert terminal.process.returncode == 0
     finally: terminal.close()
@@ -168,10 +174,109 @@ def test_editor_file_reader_accepts_typed_paths_and_paging(installed, tmp_path):
         terminal.send('\x1b')
         terminal.wait('Ready', absent='Files · many files/')
         terminal.send('\x15/editor "many files/file24.py"\r')
-        terminal.wait('Run in an adjacent terminal:')
-        assert 'file24.py' in terminal.text
+        terminal.wait('BopBop: Connected')
+        terminal.send(':q!\r')
+        terminal.wait('Back from Neovim')
         terminal.send('/exit\r'); terminal.process.wait(timeout=5)
     finally: terminal.close()
+
+
+def test_mouse_drag_and_y_copy_conversation_to_system_clipboard(installed, tmp_path):
+    clipboard = tmp_path / 'copied.txt'
+    commands = tmp_path / 'commands'
+    commands.mkdir()
+    helper = commands / 'xclip'
+    helper.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                      'open(os.environ["TEST_CLIPBOARD_PATH"], "wb").write(sys.stdin.buffer.read())\n')
+    helper.chmod(0o755)
+    terminal = ManagedTerminal(installed, tmp_path, extra_env={
+        'TMUX': '', 'DISPLAY': ':99', 'PATH': str(commands) + os.pathsep + os.environ['PATH'],
+        'TEST_CLIPBOARD_PATH': str(clipboard)})
+    try:
+        terminal.wait('Ready')
+        terminal.send(b'\x1b[<0;1;2M\x1b[<32;8;2M\x1b[<0;8;2m')
+        terminal.wait('copied to system clipboard')
+        assert clipboard.read_text().startswith('Type /')
+        terminal.send(b'\x1b[<0;1;2M')  # A new click clears the selected range.
+        terminal.send('y')
+        terminal.wait('Type / for commands.', absent='7 bytes copied')
+        assert clipboard.read_text().startswith('Type / for commands.')
+        terminal.send('\x1b')
+        terminal.send('/exit\r'); terminal.process.wait(timeout=5)
+    finally: terminal.close()
+
+
+def test_tmux_editor_split_connects_and_mouse_drag_copies(installed, tmp_path):
+    if not shutil.which('tmux') or not shutil.which('nvim'):
+        pytest.skip('tmux and Neovim are required')
+    (tmp_path / 'example.py').write_text('print(42)\n')
+    clipboard = tmp_path / 'copied.txt'
+    commands = tmp_path / 'commands'
+    commands.mkdir()
+    helper = commands / 'xclip'
+    helper.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                      'open(os.environ["TEST_CLIPBOARD_PATH"], "wb").write(sys.stdin.buffer.read())\n')
+    helper.chmod(0o755)
+    name = 'bopbop-test-' + uuid.uuid4().hex[:12]
+    with tempfile.TemporaryDirectory(prefix='bop-ed-') as bridge:
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 140, 0, 0))
+        env = {key: val for key, val in os.environ.items() if key != 'TMUX' and not key.startswith('BOPBOP_')}
+        env.update(TERM='xterm-256color', BOPBOP_EDITOR_DIR=bridge, DISPLAY=':99',
+                   PATH=str(commands) + os.pathsep + env['PATH'], TEST_CLIPBOARD_PATH=str(clipboard))
+        command = shlex.join([sys.executable, str(ROOT / 'bin/bopbop-local.py'),
+            '--ui', 'single', '--banner', 'off', '--workspace', str(tmp_path),
+            '--context-dir', str(installed.parents[1]), '--packs', 'test'])
+        process = subprocess.Popen(['tmux', '-L', name, '-f', '/dev/null', 'new-session',
+                                    '-s', 'ride', command], stdin=slave, stdout=slave,
+                                   stderr=slave, env=env)
+        def tmux(*args):
+            return subprocess.check_output(['tmux', '-L', name, *args], env=env, text=True,
+                                           stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 5
+            ready = False
+            while time.monotonic() < deadline:
+                try:
+                    ready = 'bopbop>' in tmux('capture-pane', '-p', '-t', 'ride:0.0')
+                except subprocess.CalledProcessError:
+                    pass  # The isolated tmux server is still starting.
+                if ready:
+                    break
+                time.sleep(.05)
+            assert ready
+            tmux('set-option', '-g', 'mouse', 'on')
+            tmux('send-keys', '-t', 'ride:0.0', '-l', '/editor example.py')
+            tmux('send-keys', '-t', 'ride:0.0', 'Enter')
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                panes = tmux('list-panes', '-t', 'ride', '-F', '#{pane_current_command}')
+                if 'nvim' in panes:
+                    break
+                time.sleep(.05)
+            assert 'nvim' in panes
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                right = tmux('capture-pane', '-p', '-t', 'ride:0.1')
+                if 'print(42)' in right and '● bopbop · connected' in right:
+                    break
+                time.sleep(.05)
+            assert 'print(42)' in right and '● bopbop · connected' in right
+            assert 'Press ENTER or type command to continue' not in right
+            os.write(master, b'\x1b[<0;1;2M\x1b[<32;8;2M\x1b[<0;8;2m')
+            deadline = time.monotonic() + 3
+            while not clipboard.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            assert clipboard.read_text() == 'Type / '
+            assert 'copied to system clipboard' in tmux('capture-pane', '-p', '-t', 'ride:0.0')
+        finally:
+            subprocess.run(['tmux', '-L', name, 'kill-server'], env=env, capture_output=True)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=2)
+            os.close(master); os.close(slave)
 
 
 def test_managed_tool_worker_keeps_draft_and_history_live(installed, tmp_path):

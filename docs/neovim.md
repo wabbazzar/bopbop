@@ -28,9 +28,17 @@ when you start the filter with `.`. Existing full paths still work:
 shows the browser and editor review keys.
 
 Inside **tmux**, opening a file starts a real Neovim pane beside BopBop.
-Outside tmux, BopBop prints a command to paste into an adjacent terminal.
-Paths containing spaces work in the browser; quote them if you type a full
-path explicitly.
+Outside tmux, Neovim opens in the current terminal; `:q` returns to BopBop.
+The BopBop session and editor bridge keep running while Neovim is visible.
+If a tmux split fails, BopBop reports the error and opens Neovim in the
+current terminal. Paths containing spaces work in the browser; quote them if
+you type a full path explicitly.
+
+In the BopBop pane, drag across conversation or inspector text to select and
+copy it. With a reader focused, `y` copies the selection or cursor line.
+This uses `wl-copy`, `xclip`, or `pbcopy` when available, then tries the
+terminal's OSC 52 clipboard. In tmux, enable mouse mode so drags reach BopBop;
+Shift-drag selects through the terminal instead.
 
 You can also choose a session explicitly from any directory:
 

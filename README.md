@@ -114,6 +114,10 @@ library. Server and wrapper harness dependencies are unchanged.
 
 The managed terminal keeps conversation in its own screen: **F6** cycles focus,
 arrow/Page keys scroll, **Ctrl-R** searches backward, and **Esc** returns to input.
+Drag across conversation or inspector text to select and copy it to the system
+clipboard. With a reader focused, **y** copies the selection or current line.
+This also works in tmux with mouse mode enabled; **Shift-drag** remains the
+terminal's own selection gesture.
 Your terminal's native scrollback contains the startup banner, not this live
 conversation. Model/tools run away from the renderer; you can edit the next
 draft while they work. **Ctrl-C** stops the active turn; completed tool actions
@@ -209,6 +213,7 @@ input stays fixed and F9 returns to the conversation.
 | Ctrl-D / Ctrl-U; Ctrl-F / Ctrl-B | Scroll the focused reader down/up half a page; a full page |
 | `h j k l`, `gg` / `G`, `0` / `$` | Reader cursor movement, start/end of document, start/end of line |
 | Ctrl-Space, then arrows; F8 | Select body lines and attach them to the next question |
+| Mouse drag; `y` | Copy selected reader text or the current line to the system clipboard |
 | Esc | Return to input and close live help |
 
 Press F6 to focus the inspector or conversation before using reader motions;
@@ -256,7 +261,9 @@ available until eviction or CLI exit. No automatic snapshot export occurs.
 #### Co-driving in Neovim
 
 Run `/editor src/example.py` in the managed terminal. In tmux it opens an
-adjacent **real Neovim** pane; elsewhere it prints a command for another terminal.
+adjacent **real Neovim** pane; outside tmux it opens Neovim in the same terminal
+and restores BopBop when you quit Neovim. A failed tmux split also uses that
+same-terminal path and shows the tmux error.
 Requires Neovim 0.11+. `bopbop editor list` lists live sessions;
 `bopbop editor --connect SESSION /absolute/project/file` connects explicitly.
 

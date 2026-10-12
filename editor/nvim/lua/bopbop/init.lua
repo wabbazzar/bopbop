@@ -277,7 +277,7 @@ function M.connect(session)
   rpc({ op = 'hello' }, function(reply)
     if reply.error then fail(reply.error) else
       M.state = M.pending and 'retry available' or 'connected'
-      notify('Connected ' .. session:sub(1, 8) .. ' · ' .. reply.model .. ' · shared conversation · ' .. reply.workspace)
+      notify('Connected · ' .. reply.model)
     end
   end)
 end

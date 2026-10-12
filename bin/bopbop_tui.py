@@ -5,6 +5,7 @@ Only this module imports prompt_toolkit. No UI state is written to disk.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
 import json
@@ -17,8 +18,10 @@ import shlex
 import time
 import pathlib
 import subprocess
+import shutil
 
 from prompt_toolkit import Application
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
@@ -32,6 +35,7 @@ from prompt_toolkit.layout import (Layout, HSplit, VSplit, Window, FloatContaine
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style
 from prompt_toolkit.lexers import Lexer
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.widgets import TextArea, SearchToolbar
 
 from bopbop_tool_ui import (argument_focus, call_help_lines, call_tool_name,
@@ -181,17 +185,18 @@ class TerminalUI:
         self.file_task = None
         self.pending_tools = {}
         self.editor_bridge = None
+        self.editor_task = None
         self.editor_listing_cache = None
         self.editor_preview_cache = None
         self.inspector_search = SearchToolbar()
         self.inspector = TextArea(text='F2 Docs · F3 Result · F4 Context · F5 File\n'
                                   'Use /inspect file PATH to read a workspace file.\n',
-                                  read_only=True, scrollbar=True,
+                                  read_only=True, scrollbar=True, focus_on_click=True,
                                   wrap_lines=Condition(lambda: self.inspector_mode != 'file'),
                                   search_field=self.inspector_search, lexer=InspectorLexer())
         self.search = SearchToolbar()
         self.transcript = TextArea(text='Type / for commands. F6 changes focus; Ctrl-R searches a reader.\n',
-                                   read_only=True, scrollbar=True, wrap_lines=True,
+                                   read_only=True, scrollbar=True, wrap_lines=True, focus_on_click=True,
                                    search_field=self.search, lexer=TranscriptLexer())
         self.draft = Buffer(multiline=False)
         self.draft.on_text_changed += self.changed
@@ -219,12 +224,64 @@ class TerminalUI:
                              FormattedTextControl(self.popup_text), style='class:menu',
                              wrap_lines=False), filter=Condition(lambda: self.popup_height() > 0)))])
         self.app = Application(layout=Layout(self.root, focused_element=self.input_control),
-                               key_bindings=self.keys, full_screen=True, mouse_support=False,
+                               key_bindings=self.keys, full_screen=True, mouse_support=True,
                                style=STYLE if self.display.color else Style.from_dict({}),
                                input=input, output=output, refresh_interval=.1,
                                before_render=self.before_render)
         self.app.ttimeoutlen = .05
         self.app.timeoutlen = .3
+        self.bind_reader_mouse(self.transcript)
+        self.bind_reader_mouse(self.inspector)
+
+    def bind_reader_mouse(self, reader):
+        original = reader.control.mouse_handler
+        def handle(event):
+            # BufferControl focuses on mouse-up by default; focus first so the
+            # first drag in a reader can select text immediately.
+            if event.event_type == MouseEventType.MOUSE_DOWN:
+                self.app.layout.focus(reader)
+            result = original(event)
+            if event.event_type == MouseEventType.MOUSE_UP and reader.buffer.selection_state:
+                self.copy_reader(reader, selected_only=True)
+            return result
+        reader.control.mouse_handler = handle
+
+    def clipboard_write(self, value):
+        data = value.encode('utf-8')
+        if os.environ.get('WAYLAND_DISPLAY') and shutil.which('wl-copy'):
+            command = ['wl-copy']
+        elif os.environ.get('DISPLAY') and shutil.which('xclip'):
+            command = ['xclip', '-selection', 'clipboard', '-i']
+        elif shutil.which('pbcopy'):
+            command = ['pbcopy']
+        else:
+            # OSC 52 works in many local and remote terminals, including tmux
+            # when clipboard passthrough is enabled.
+            if len(data) > 100000:
+                raise ValueError('Selection is too large for terminal clipboard; select fewer lines')
+            self.app.output.write_raw('\x1b]52;c;' + base64.b64encode(data).decode('ascii') + '\x07')
+            self.app.output.flush()
+            return 'sent to terminal clipboard'
+        subprocess.run(command, input=data, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=2, check=True)
+        return 'copied to system clipboard'
+
+    def copy_reader(self, reader, selected_only=False):
+        doc = reader.buffer.document
+        if doc.selection:
+            start, end = doc.selection_range()
+            value = doc.text[start:end]
+        elif selected_only:
+            return
+        else:
+            value = doc.current_line
+        if not value:
+            return
+        try:
+            destination = self.clipboard_write(value)
+            self.notice = f'{len(value.encode()):,} bytes {destination}'
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            self.notice = f'Copy failed: {exc}'
 
     def pane_width(self):
         return Dimension.exact(int(self.app.output.get_size().columns * self.inspector_ratio))
@@ -253,7 +310,7 @@ class TerminalUI:
     def footer(self):
         if self.app.layout.has_focus(self.inspector) or self.app.layout.has_focus(self.transcript):
             reader = 'Inspector' if self.app.layout.has_focus(self.inspector) else 'Conversation'
-            return [('class:status', f' {reader} focused · {self.notice} · Ctrl-D/U half page · Ctrl-F/B page · hjkl · gg/G · Ctrl-R search · Esc input')]
+            return [('class:status', f' {reader} focused · {self.notice} · drag to copy · y line/selection · Ctrl-D/U scroll · hjkl · Esc input')]
         state = (f'Working {time.monotonic() - self.started:.1f}s · {self.stream_activity} · Ctrl-C stop'
                  if self.worker else self.notice)
         if self.editor_navigation_active():
@@ -516,6 +573,7 @@ class TerminalUI:
                 '  Review <leader>ba apply · <leader>bd discard\n'
                 '◆ inspector\n'
                 '  F2 Docs · F3 Result · F4 Context · F5 File · F6 focus · F7 pin · F8 attach · F9 pane\n'
+                '  Drag in a reader to select and copy · y copies a selection or current line\n'
                 '  Alt-Left/Right snapshots · Alt-−/+ resize · Ctrl-Space select body lines\n')
             return
         if prompt == '/reset':
@@ -686,11 +744,34 @@ class TerminalUI:
         command = [str(pathlib.Path(__file__).with_name('bopbop')), 'editor', '--connect',
                    self.editor_bridge.id, str(path)]
         if os.environ.get('TMUX'):
-            subprocess.run(['tmux', 'split-window', '-h', '-c', str(self.args.workspace),
-                            shlex.join(command)], check=True, capture_output=True)
-            self.notice = 'Neovim opened · select v/V → explain/edit · review before apply'
-        else:
-            self.append('Run in an adjacent terminal:\n' + shlex.join(command) + '\n')
+            try:
+                split = ['tmux', 'split-window', '-h', '-c', str(self.args.workspace)]
+                if os.environ.get('TMUX_PANE'):
+                    split += ['-t', os.environ['TMUX_PANE']]
+                result = subprocess.run([*split, shlex.join(command)],
+                                        capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    self.notice = 'Neovim opened in tmux · select v/V → explain/edit'
+                    return
+                self.append(f'tmux split failed: {safe_text(result.stderr.strip())}\n')
+            except (OSError, subprocess.SubprocessError) as exc:
+                self.append(f'tmux split failed: {exc}\n')
+        if self.editor_task:
+            raise ValueError('An editor is already open in this terminal')
+        self.notice = 'Opening Neovim in this terminal · :q returns to BopBop'
+        self.editor_task = self.app.create_background_task(self.launch_editor(command))
+
+    async def launch_editor(self, command):
+        try:
+            result = await run_in_terminal(lambda: subprocess.run(command, cwd=self.args.workspace),
+                                           in_executor=True)
+            self.notice = ('Back from Neovim' if result.returncode == 0
+                           else f'Neovim exited with status {result.returncode}')
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.notice = f'Could not launch Neovim: {exc}'
+            self.append(self.notice + '\n')
+        finally:
+            self.editor_task = None
 
     def submit_editor(self, request):
         if self.worker:
@@ -835,6 +916,10 @@ class TerminalUI:
             self.keys.add(key, filter=reading)(lambda event, handler=handler: scroll_reader(event, handler))
         @self.keys.add('j', filter=reading)
         def down(event): event.current_buffer.cursor_down()
+        @self.keys.add('y', filter=reading)
+        def copy(event):
+            reader = self.inspector if self.app.layout.has_focus(self.inspector) else self.transcript
+            self.copy_reader(reader)
         @self.keys.add('k', filter=reading)
         def up(event): event.current_buffer.cursor_up()
         @self.keys.add('h', filter=reading)
