@@ -9,8 +9,8 @@ import subprocess
 import time
 import urllib.request
 
-ROOT = pathlib.Path(__file__).resolve().parent
-RUNS = ROOT / "runs"
+OUTPUT = pathlib.Path(__file__).resolve().parents[3] / "tmp" / "harness-experiments"
+RUNS = OUTPUT / "runs"
 MODEL = "gpt-oss:20b"
 HOST = "http://127.0.0.1:11434/api/chat"
 MAX_STEPS = 7
@@ -150,13 +150,14 @@ def trial(variant: str, task: str) -> dict:
             "steps": sum("response" in x for x in trace), "final": final, "trace": trace}
 
 def main():
+    OUTPUT.mkdir(parents=True, exist_ok=True)
     results = []
     for task in TASKS:
         for variant in ("narrow_tools", "generic_tool", "json_actions"):
             print(f"Running {task}/{variant}...", flush=True)
             result = trial(variant, task)
             results.append(result)
-            (ROOT / "results.json").write_text(json.dumps(results, indent=2))
+            (OUTPUT / "results.json").write_text(json.dumps(results, indent=2))
             print(f"  passed={result['passed']} time={result['seconds']}s steps={result['steps']}", flush=True)
 
 if __name__ == "__main__":

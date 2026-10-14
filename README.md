@@ -16,15 +16,20 @@ scripts, and tools you've given it.
 
 ## The context-dir idea
 
-BopBop itself is a thin gateway. The personality
-and capabilities live in a **context directory** (`~/.bopbop/context`) —
-a normal agent working dir with `AGENTS.md`/`CLAUDE.md`, a personality file,
-and any scripts you add. Teaching your agent a new trick is: drop a script in
-the context dir, document it in `CLAUDE.md`, done. Codex turns explicitly load
-that shared context in addition to native `AGENTS.md`.
+BopBop keeps its agent, interfaces, and user configuration separate. Personality
+and installed capabilities live in a **context directory** (`~/.bopbop/context`)
+with `AGENTS.md`/`CLAUDE.md`, a personality file, and optional context packs.
+Claude and Codex can use documented scripts there. The local Ollama agent gets
+callable tools from validated pack declarations; adding a script alone does not
+expose it as a tool. Codex turns explicitly load the shared context in addition
+to native `AGENTS.md`.
 
 This is the same pattern you'd use for a human teammate: don't change the
 messenger, change the onboarding doc.
+
+For the code map and the rules for keeping the harness small, see
+[Architecture and maintenance](docs/architecture.md). The original local
+harness comparison is preserved under [research](docs/research/local-harness/report.md).
 
 ## Install
 

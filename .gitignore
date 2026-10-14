@@ -16,3 +16,6 @@ build/
 *.tsbuildinfo
 test-results/
 playwright-report/
+
+# Local probes and scratch work; durable findings belong under docs/research/.
+/tmp/

@@ -19,11 +19,11 @@ receiving no tool schemas, so parsing it as a JSON action failed both times.
 
 **Recommendation:** use Ollama native tool calls with narrow, explicit tools.
 It was as fast as the generic tool in this small warm run, and each tool has a
-clear argument schema and dispatch path. `../../bin/bopbop-local.py` is a standard-library
-terminal prototype of that loop. It does not use Codex or Claude Code.
+clear argument schema and dispatch path. `../../../bin/bopbop-local.py` is the
+standard-library local agent based on that loop. It does not use Codex or Claude Code.
 
 The benchmark only covers two small tasks, and its elapsed times include model
 generation on a CPU. It does not establish reliability for broad coding tasks,
-long conversation memory, image inputs, or Signal delivery. The prototype has
-in-process conversation history and no durable sessions or approval mechanism.
-Its `run_command` tool executes with the user's permissions.
+long conversation memory, image inputs, or Signal delivery. These findings are
+historical; see the main README for current session behavior. The local
+`run_command` tool executes with the user's permissions.

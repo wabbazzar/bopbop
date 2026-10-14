@@ -143,16 +143,20 @@ def test_live_help_reads_new_pack_declarations_without_execution(local, installe
     assert not (installed / 'called').exists()
 
 
-def test_builtin_reference_is_owned_by_declaration_and_excluded_from_model(local, monkeypatch):
+def test_builtin_reference_is_owned_by_declaration_and_excluded_from_model(local, monkeypatch, capsys, tmp_path):
     definitions = [dict(definition) for definition in local.WORKSPACE_TOOLS]
+    definitions[0]['description'] = 'Fresh declaration description'
     definitions[0]['documentation'] = 'Fresh declaration reference'
     definitions[0]['examples'] = [{'arguments': {'path': 'new-example'}}]
     monkeypatch.setattr(local, 'WORKSPACE_TOOLS', definitions)
-    runtime = local.AgentRuntime()
+    runtime = local.AgentRuntime(context_dir=tmp_path)
     assert 'Fresh declaration reference' in '\n'.join(reference_lines(runtime, 'list_files', local.Display(False)))
     assert 'new-example' in '\n'.join(call_help_lines(runtime, 'list_files', local.Display(False), 100))
     assert all(set(item['function']) == {'name', 'description', 'parameters'} for item in runtime.tools)
     assert 'Fresh declaration reference' not in json.dumps(runtime.tools)
+    assert 'Fresh declaration description' in json.dumps(runtime.tools)
+    local.show_tools(runtime, local.Display(False))
+    assert 'Fresh declaration description' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('cursor', [0, 8, 20, 50, 80])

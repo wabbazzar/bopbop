@@ -361,10 +361,6 @@ WORKSPACE_TOOLS = [
          examples=[{"arguments": {"command": "pwd"}}]),
 ]
 
-# Human reference metadata is never added to model requests.
-TOOLS = [{"type": "function", "function": {key: definition[key]
-          for key in ("name", "description", "parameters")}} for definition in WORKSPACE_TOOLS]
-
 
 def confined(workspace: pathlib.Path, rel: str) -> pathlib.Path:
     path = (workspace / rel).resolve()
@@ -696,9 +692,8 @@ def show_tools(runtime: AgentRuntime, display: Display) -> None:
     display.event("◆ enabled tools", style="brand")
     if not runtime.profile:
         display.event("  Workspace", style="strong")
-        for entry in TOOLS:
-            fn = entry['function']
-            display.event(f"    {fn['name']}", fn['description'], 'tool')
+        for definition in WORKSPACE_TOOLS:
+            display.event(f"    {definition['name']}", definition['description'], 'tool')
     enabled = set()
     if runtime.registry:
         for pack in runtime.registry.packs:
@@ -991,7 +986,7 @@ def main():
         registry = Registry(args.context_dir.expanduser(), selected) if selected else None
         if args.profile and not registry.schemas:
             raise ValueError("profile has no native tools")
-        if not args.profile and registry and set(registry.handlers) & {t['function']['name'] for t in TOOLS}:
+        if not args.profile and registry and set(registry.handlers) & {t['name'] for t in WORKSPACE_TOOLS}:
             raise ValueError("pack tool collides with a builtin tool")
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
