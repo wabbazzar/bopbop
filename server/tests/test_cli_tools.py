@@ -183,6 +183,7 @@ import importlib.util,json,pathlib,readline,socket,sys
 sys.path.insert(0,sys.argv[1])
 spec=importlib.util.spec_from_file_location('prompt_under_test',pathlib.Path(sys.argv[1])/'bopbop-local.py')
 local=importlib.util.module_from_spec(spec);sys.modules[spec.name]=local;spec.loader.exec_module(local)
+from bopbop_prompt import prompt_line
 runtime=local.AgentRuntime(local.Registry(pathlib.Path(sys.argv[2]),['test']), 'test')
 def forbidden(*args,**kwargs): raise AssertionError('help must not execute tools or network calls')
 socket.socket=forbidden;runtime.execute=forbidden;local.chat=forbidden
@@ -190,7 +191,7 @@ readline.clear_history()
 for line in json.loads(sys.argv[4]): readline.add_history(line)
 try:
     for _ in range(int(sys.argv[5])):
-        draft=local.prompt_line(local.Display(sys.argv[3]=='True'),runtime)
+        draft=prompt_line(local.Display(sys.argv[3]=='True'),local.SLASH_COMMANDS,runtime)
         print('DRAFT_JSON='+json.dumps(draft),flush=True)
 except KeyboardInterrupt:
     print('CANCELLED',flush=True)

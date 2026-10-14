@@ -34,7 +34,8 @@ question are edited. The reference comes entirely from that tool's definition.
 
 ## Implementation pointers
 
-- `bin/bopbop-local.py`: `_slash_prompt`, key decoding, builtin declarations,
+- `bin/bopbop_prompt.py`: plain line editing and key decoding.
+- `bin/bopbop-local.py`: builtin declarations,
   `AgentRuntime` and schema projection.
 - `bin/bopbop_tool_ui.py`: definition discovery, shared reference rendering and
   terminal-safe compact help.

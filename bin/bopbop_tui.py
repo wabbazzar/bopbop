@@ -6,16 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
-import io
 import json
-import multiprocessing
 import os
-import queue
 import re
-import signal
 import shlex
-import time
 import pathlib
 import subprocess
 import shutil
@@ -39,20 +33,21 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.widgets import TextArea, SearchToolbar
 
 from bopbop_tool_ui import (argument_focus, call_help_lines, call_tool_name,
-                            clip_text, example_arguments, find_tool, reference_lines, safe_text,
+                            clip_text, command_matches, example_arguments, find_tool, reference_lines, safe_text,
                             tool_entries)
 from bopbop_inspector import (InspectorStore, Snapshot, request_snapshot, result_snapshot,
                               file_snapshot, attachment_block)
-from bopbop_editor import EditorBridge, editor_prompt, edit_result
+from bopbop_editor import EditorBridge
+from bopbop_worker import TurnWorker
 
-UI_COMMANDS = (
-    ('/editor', 'Browse workspace files and open one in connected Neovim'),
-    ('/inspect', 'Show docs TOOL, result, context, file PATH, or diff PATH'),
-    ('/attach', 'Attach inspector body lines: /attach 1:20'),
-    ('/detach', 'Clear pending evidence attachments'),
-    ('/pane', 'Toggle inspector (F9)'),
-    ('/pin', 'Keep the current inspector snapshot (F7)'),
-)
+UI_COMMANDS = {
+    '/editor': 'Browse workspace files and open one in connected Neovim',
+    '/inspect': 'Show docs TOOL, result, context, file PATH, or diff PATH',
+    '/attach': 'Attach inspector body lines: /attach 1:20',
+    '/detach': 'Clear pending evidence attachments',
+    '/pane': 'Toggle inspector (F9)',
+    '/pin': 'Keep the current inspector snapshot (F7)',
+}
 
 
 class InspectorLexer(Lexer):
@@ -87,72 +82,6 @@ STYLE = Style.from_dict({
 })
 
 
-class EventWriter(io.TextIOBase):
-    """Capture legacy presentation in the worker, never process-wide in the UI."""
-    def __init__(self, send):
-        self.send = send
-
-    def write(self, text):
-        if text:
-            self.send({'kind': 'output', 'text': text})
-        return len(text)
-
-    def flush(self):
-        pass
-
-
-def run_worker(engine, args, runtime, messages, session, prompt, events, editor=None):
-    os.setsid()
-    def stop(signum, frame):
-        # Unwind native pack handlers so their own process groups are reaped.
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, stop)
-    send = events.put
-    streamed = [False]
-    def observe(event):
-        if event['kind'] == 'request':
-            streamed[0] = False
-        elif event['kind'] == 'stream' and event.get('delta'):
-            streamed[0] = True
-        send(event)
-    runtime.observer = observe
-    writer = EventWriter(send)
-    try:
-        with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-            class WorkerDisplay(engine.Display):
-                def answer(self, value):
-                    if not streamed[0]:
-                        super().answer(value)
-            display = WorkerDisplay(False)
-            if editor:
-                runtime.review_only = True
-                runtime.response_format = ({'type': 'object', 'properties': {
-                    'replacement': {'type': 'string'}, 'summary': {'type': 'string'}},
-                    'required': ['replacement', 'summary']} if editor['action'] == 'edit' else None)
-                messages.append({'role': 'user', 'content': editor_prompt(editor)})
-                answer, usage = engine.turn(args.model, messages, args.workspace, args.context,
-                                            display, runtime=runtime)
-                session.record(usage)
-                send({'kind': 'editor_result', 'result': edit_result(answer, editor)})
-            elif not engine.handle_command(prompt, messages, session, args.model, args.context,
-                                          args.workspace, display, runtime):
-                messages.append({'role': 'user', 'content': prompt})
-                answer, usage = engine.turn(args.model, messages, args.workspace, args.context,
-                                            display, runtime=runtime)
-                session.record(usage)
-                display.answer(answer)
-    except KeyboardInterrupt:
-        send({'kind': 'output', 'text': '\nTurn cancelled.\n'})
-        if editor:
-            send({'kind': 'editor_result', 'error': 'Cancelled; selection and prompt retained'})
-    except Exception as exc:
-        send({'kind': 'output', 'text': f'\nError: {type(exc).__name__}: {exc}\n'})
-        if editor:
-            send({'kind': 'editor_result', 'error': str(exc)})
-    finally:
-        send({'kind': 'finished', 'messages': messages, 'session': session})
-
-
 class TerminalUI:
     def __init__(self, engine, args, runtime, messages, session, *, input=None, output=None):
         self.engine, self.args, self.runtime = engine, args, runtime
@@ -167,8 +96,6 @@ class TerminalUI:
         self.last_focus = None
         self.recalled = False
         self.worker = None
-        self.events = None
-        self.started = None
         self.notice = 'Ready'
         self.evicted_lines = 0
         self.store = InspectorStore()
@@ -311,7 +238,7 @@ class TerminalUI:
         if self.app.layout.has_focus(self.inspector) or self.app.layout.has_focus(self.transcript):
             reader = 'Inspector' if self.app.layout.has_focus(self.inspector) else 'Conversation'
             return [('class:status', f' {reader} focused · {self.notice} · drag to copy · y line/selection · Ctrl-D/U scroll · hjkl · Esc input')]
-        state = (f'Working {time.monotonic() - self.started:.1f}s · {self.stream_activity} · Ctrl-C stop'
+        state = (f'Working {self.worker.elapsed:.1f}s · {self.stream_activity} · Ctrl-C stop'
                  if self.worker else self.notice)
         if self.editor_navigation_active():
             return [('class:status', f' {state} · ↑↓ files · →/Tab enter · ← parent · Enter open · Esc close')]
@@ -320,15 +247,7 @@ class TerminalUI:
         return [('class:status', f' {state}{attachment}{retained}  · F6 focus · F9 pane · Ctrl-D quit')]
 
     def matches(self):
-        text = self.draft.text
-        parts = text.split(maxsplit=1)
-        if parts and parts[0] in {'/call', '/tools'} and ' ' in text:
-            prefix = parts[1] if len(parts) > 1 else ''
-            return [(f'{parts[0]} {definition["name"]}', definition['description'])
-                    for definition, _ in tool_entries(self.runtime)
-                    if definition['name'].startswith(prefix)]
-        return [(name, description) for name, description in (*self.engine.SLASH_COMMANDS, *UI_COMMANDS)
-                if text.startswith('/') and name.startswith(text.lower())]
+        return command_matches(self.draft.text, (*self.engine.SLASH_COMMANDS, *UI_COMMANDS.items()), self.runtime)
 
     def editor_navigation_active(self):
         return (not self.hidden and not self.recalled and
@@ -538,7 +457,10 @@ class TerminalUI:
         prompt = self.draft.text.strip()
         if not prompt:
             return
-        if self.worker and prompt.split()[0] not in dict(UI_COMMANDS) and not prompt.startswith('/tools') and prompt not in {'/exit', '/help'}:
+        parts = prompt.split(maxsplit=1)
+        command = parts[0]
+        if (self.worker and command not in UI_COMMANDS and command != '/tools'
+                and prompt not in {'/exit', '/help'}):
             self.notice = 'Still working; draft kept. Ctrl-C stops the active turn.'
             return
         if prompt == '/exit':
@@ -554,8 +476,7 @@ class TerminalUI:
         self.append('\n› ' + prompt + '\n')
         if self.ui_command(prompt):
             return
-        if prompt.startswith('/tools'):
-            parts = prompt.split(maxsplit=1)
+        if command == '/tools':
             if len(parts) == 1:
                 self.append('\n'.join(f'{d["name"]}: {d["description"]}' for d, _ in tool_entries(self.runtime)) + '\n')
             else:
@@ -566,7 +487,7 @@ class TerminalUI:
             return
         if prompt == '/help':
             self.append('◆ commands\n' + '\n'.join(
-                f'  {name:<9} {description}' for name, description in (*self.engine.SLASH_COMMANDS, *UI_COMMANDS))
+                f'  {name:<9} {description}' for name, description in (*self.engine.SLASH_COMMANDS, *UI_COMMANDS.items()))
                 + '\n\n◆ editor browser\n'
                 '  /editor · ↑↓ files · →/Tab enter folder · ← parent · Enter open · Esc close\n'
                 '  Neovim v/V select · <leader>be explain · <leader>br edit\n'
@@ -702,7 +623,7 @@ class TerminalUI:
 
     def ui_command(self, prompt):
         command, _, arg = prompt.partition(' ')
-        if command not in dict(UI_COMMANDS):
+        if command not in UI_COMMANDS:
             return False
         try:
             if command == '/editor': self.open_editor(arg)
@@ -784,12 +705,8 @@ class TerminalUI:
 
     def start_worker(self, prompt, editor=None):
         self.stream_activity = 'starting'
-        ctx = multiprocessing.get_context('fork')
-        self.events = ctx.Queue()
-        self.worker = ctx.Process(target=run_worker, args=(self.engine, self.args, self.runtime,
-                                  self.messages, self.session, prompt, self.events, editor))
-        self.worker.start()
-        self.started = time.monotonic()
+        self.worker = TurnWorker(self.engine, self.args, self.runtime,
+                                 self.messages, self.session, prompt, editor)
 
     def receive(self, event):
         if event['kind'] == 'editor_result':
@@ -803,7 +720,12 @@ class TerminalUI:
             self.append(event['text'])
         elif event['kind'] == 'finished':
             self.messages, self.session = event['messages'], event['session']
-            self.notice = f'Finished in {time.monotonic() - self.started:.1f}s'
+            self.notice = f'Finished in {self.worker.elapsed:.1f}s'
+            self.cleanup_worker()
+        elif event['kind'] == 'worker_exit':
+            self.append(f'\nWorker exited before completion (status {event["exit_code"]}).\n')
+            if self.editor_bridge:
+                self.editor_bridge.complete(error='Worker exited; selection and prompt retained')
             self.cleanup_worker()
         elif event['kind'] == 'checkpoint':
             self.messages = event['messages']
@@ -834,28 +756,14 @@ class TerminalUI:
             self.pending_tools.pop(event['call_id'], None)
             self.record_snapshot(result_snapshot(event))
 
-    def cleanup_worker(self):
+    def cleanup_worker(self, cancel=False):
         if self.worker:
-            self.worker.join(timeout=.5)
-            if self.worker.is_alive():
-                self.worker.terminate()
-                self.worker.join(timeout=.5)
-            if self.worker.is_alive():
-                self.worker.kill()
-                self.worker.join(timeout=.5)
-            self.worker.close()
+            self.worker.close(cancel=cancel)
             self.worker = None
-        if self.events:
-            self.events.close()
-            self.events = None
 
     def cancel(self):
         if self.worker:
-            try:
-                os.killpg(self.worker.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                self.worker.terminate()
-            self.cleanup_worker()
+            self.cleanup_worker(cancel=True)
             for call in self.pending_tools.values():
                 self.record_snapshot(Snapshot('result', call['name'] + ' · interrupted',
                     'Cancelled before a result was received. Side effects may have occurred.',
@@ -882,20 +790,11 @@ class TerminalUI:
             self.editor_bridge = None
             self.append(f'Editor bridge unavailable: {exc}\n')
         while True:
-            if self.events:
-                for _ in range(100):
-                    try:
-                        event = self.events.get_nowait()
-                    except queue.Empty:
-                        break
+            if self.worker:
+                for event in self.worker.poll():
                     self.receive(event)
-                    if not self.events:
+                    if not self.worker:
                         break
-                if self.worker and not self.worker.is_alive() and self.events.empty():
-                    self.append('\nWorker exited before completion.\n')
-                    if self.editor_bridge:
-                        self.editor_bridge.complete(error='Worker exited; selection and prompt retained')
-                    self.cleanup_worker()
             await asyncio.sleep(.03)
 
     def bind_keys(self):

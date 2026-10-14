@@ -11,9 +11,11 @@ sharing the same user-facing context and pack format where applicable.
 | --- | --- | --- |
 | `bin/bopbop` | CLI routing, installation and health commands | `bopbop`, `bopbop doctor`, `bopbop pack` |
 | `bin/bopbop-local.py` | Ollama requests, conversation turns, built-in tool dispatch, telemetry | `bopbop local`, server Ollama harness |
+| `bin/bopbop_prompt.py` | Plain terminal line editing, history and key decoding | `bopbop local --ui plain` |
 | `bin/bopbop_packs.py` | Pack loading, argument validation, handler execution | Local agent and pack CLI |
 | `bin/bopbop_tool_ui.py` | Human tool references and explicit `/call` parsing | Plain and managed terminals |
-| `bin/bopbop_tui.py` | Optional terminal layout, menus, inspector, worker lifecycle | `bopbop local --ui single\|split` |
+| `bin/bopbop_tui.py` | Optional terminal layout, menus, inspector and editor interaction | `bopbop local --ui single\|split` |
+| `bin/bopbop_worker.py` | A turn's process, event queue, timing and cancellation | Managed terminal |
 | `bin/bopbop_inspector.py`, `bin/bopbop_editor.py`, `editor/nvim/` | Bounded evidence snapshots and Neovim review protocol | Managed terminal |
 | `server/` | Signal and browser API, backend selection, durable sessions and settings | `bopbop run`, systemd service |
 | `src/`, `static/` | Browser app | `bopbop web` |
@@ -57,8 +59,11 @@ make the local engine depend on either of them.
   `bash scripts/leak-check.sh --staged`. CI runs Python, shell, browser, and
   leak checks.
 
-The managed terminal is currently the largest single UI module. Its worker,
-file browser, inspector, and key bindings are natural review seams when those
-areas change next. Avoid splitting it by line count alone; first identify
-state or behavior that can leave the module without creating another copy of
-the agent loop.
+The terminal calls the same engine as the server. It owns one `TurnWorker`
+for the active turn; process signaling and reaping belong to that worker.
+Plain and managed terminals share command filtering in `bopbop_tool_ui.py`.
+Both display declarations owned by the engine or enabled packs.
+
+The file browser, inspector, and key bindings still live together in the
+managed terminal. Extract them when a change gives them independent state or
+behavior that needs an owner, rather than splitting by line count alone.

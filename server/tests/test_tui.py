@@ -94,6 +94,9 @@ def test_managed_prompt_stays_anchored_and_restores_transcript(installed, tmp_pa
         assert terminal.screen.cursor.y == row
         terminal.send('\x1b')
         terminal.wait('Ready', absent='call help')
+        terminal.send('\x15/tools_extra\r')
+        terminal.wait('Unknown command')
+        terminal.wait('Finished in')
         terminal.send('\x15/exit\r')
         terminal.process.wait(timeout=5)
         assert terminal.process.returncode == 0

@@ -19,6 +19,18 @@ def tool_entries(runtime):
     return runtime.tool_definitions
 
 
+def command_matches(draft, commands, runtime=None):
+    """Filter command and tool declarations for either terminal's composer."""
+    parts = draft.split(maxsplit=1)
+    if runtime and parts and parts[0] in {'/call', '/tools'} and ' ' in draft:
+        prefix = parts[1] if len(parts) > 1 else ''
+        return [(f'{parts[0]} {definition["name"]}', definition['description'])
+                for definition, _ in tool_entries(runtime)
+                if definition['name'].startswith(prefix)]
+    return [(name, description) for name, description in commands
+            if draft.startswith('/') and name.startswith(draft.lower())]
+
+
 def find_tool(runtime, name):
     for definition, pack in tool_entries(runtime):
         if definition["name"] == name:

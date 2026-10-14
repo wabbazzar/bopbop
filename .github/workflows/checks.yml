@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
       - name: Syntax, import, and tests
         run: |
-          python -m compileall server/
+          python -m compileall -q bin/ server/
           pip install -q -r server/requirements-dev.txt
           cd server
           python -c "import main"
