@@ -197,6 +197,15 @@ def test_command_timeout_cleans_up_children(local, tmp_path):
         os.kill(int((tmp_path / 'child.pid').read_text()), 0)
 
 
+def test_verbose_command_retains_the_selected_tail_and_final_status(local, tmp_path):
+    command = shlex.join([sys.executable, '-c', 'print("x"*5000);print("WORKFLOW COMPLETE")'])
+    result = local.execute(tmp_path, 'run_command', {'command': command, 'max_output_chars': 1000})
+    assert result.startswith('exit=0\n') and result.endswith('WORKFLOW COMPLETE\n')
+    assert len(result) == len('exit=0\n') + 1000
+    for limit in (0, True, 1000.5, 12001):
+        assert local.execute(tmp_path, 'run_command', {'command': command, 'max_output_chars': limit}).startswith('ERROR:')
+
+
 @pytest.mark.parametrize('cursor', [0, 8, 20, 50, 80])
 def test_draft_view_keeps_unicode_cursor_inside_narrow_terminal(cursor):
     draft = '/call sample_count ' + 'café漢字 ' * 12

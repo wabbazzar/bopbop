@@ -317,10 +317,12 @@ the CLI and requires no additional packages.
 `run_command` executes with your user permissions and has no approval step.
 Its default timeout is 30 seconds. Long workflows can set `timeout_seconds`
 explicitly, up to 21,600 seconds; the agent waits for the result. Cancellation
-and timeout stop the command's process group. For example:
+and timeout stop the command's process group. `max_output_chars` selects the
+returned output tail (256–12,000 characters, default 12,000); use a smaller
+tail for verbose progress logs to keep the next model request small. For example:
 
 ```text
-/call run_command {"command":"python3 scripts/long-task.py","timeout_seconds":3600}
+/call run_command {"command":"python3 scripts/long-task.py","timeout_seconds":3600,"max_output_chars":3000}
 ```
 Use a workspace you trust. A selected local `--profile` exposes only that
 pack’s native tools and its short instructions.

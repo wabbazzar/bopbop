@@ -107,9 +107,11 @@ WORKSPACE_TOOLS = [
     tool("run_command", "Run an argv command in the working directory, without a shell. Commands have the current user's permissions.",
          {"command": {"type": "string"},
           "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 21600,
-                              "description": "Default 30. Set explicitly for a long workflow and wait for its result."}}, ["command"],
+                              "description": "Default 30. Set explicitly for a long workflow and wait for its result."},
+          "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 12000,
+                               "description": "Return this many characters from the output tail; default 12000. Use 3000 for verbose workflows."}}, ["command"],
          documentation="Executes immediately with your permissions. Uses shlex argv splitting without a shell; pipes and shell expansion are not interpreted. Default timeout: 30 seconds; explicit maximum: 6 hours. Cancellation stops the command process group.",
-         returns="exit=N followed by the last 12,000 characters of combined stdout/stderr; ERROR: for dispatch failures.",
+         returns="exit=N followed by the requested output tail, capped at 12,000 characters; ERROR: for dispatch failures.",
          examples=[{"arguments": {"command": "pwd"}}]),
 ]
 
@@ -143,11 +145,14 @@ def execute(workspace: pathlib.Path, name: str, args: dict) -> str:
             timeout = args.get('timeout_seconds', 30)
             if type(timeout) is not int or not 1 <= timeout <= 21600:
                 return 'ERROR: timeout_seconds must be an integer from 1 to 21600'
+            limit = args.get('max_output_chars', 12000)
+            if type(limit) is not int or not 256 <= limit <= 12000:
+                return 'ERROR: max_output_chars must be an integer from 256 to 12000'
             with subprocess.Popen(argv, cwd=workspace, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
                 try:
                     stdout, stderr = proc.communicate(timeout=timeout)
-                    return f"exit={proc.returncode}\n{(stdout + stderr)[-12000:]}"
+                    return f"exit={proc.returncode}\n{(stdout + stderr)[-limit:]}"
                 finally:
                     try:
                         os.killpg(proc.pid, signal.SIGTERM)
