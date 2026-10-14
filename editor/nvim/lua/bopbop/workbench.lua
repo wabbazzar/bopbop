@@ -28,7 +28,7 @@ function W.show(buf)
   end
   api.nvim_win_set_buf(0, buf)
   if vim.bo[buf].buftype == '' then
-    vim.wo.statusline = ' File · %f %m · %l/%L · v/V select · F2 docs · F3 review'
+    vim.wo.statusline = ' File · %<%t %m · %l/%L · F2 docs · F3 review · F4 context · F5 file'
   elseif vim.b[buf].bopbop_snapshot then
     vim.wo.statusline = ' Evidence · %l/%L · V select · F8 attach · e edit source · q file'
   end
@@ -66,7 +66,7 @@ function W.source_view()
   if W.source and api.nvim_buf_is_valid(W.source) then
     W.show(W.source)
     W.kind = 'source'
-    vim.wo.statusline = ' File · %f %m · %l/%L · v/V select · F2 docs · F3 review'
+    vim.wo.statusline = ' File · %<%t %m · %l/%L · F2 docs · F3 review · F4 context · F5 file'
   else W.notify('Open a file with /editor first') end
 end
 
