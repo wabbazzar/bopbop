@@ -74,10 +74,48 @@ and previews stay local; browsing sends no text to the model.
 5. In that review, **`<leader>ba`** applies or **`<leader>bd`** discards.
    After applying, **u** undoes. **`:w`** is still your separate save action.
 
-Neovim's default leader is backslash, so the default explain keys are `\be`.
+Neovim's default leader is backslash. With the selection still highlighted,
+press **backslash**, then **b**, then **e**, in quick succession: `\be`.
+These are three keys in the editor, without Enter or a leading colon. If you
+pause longer than your Vim mapping timeout (normally one second), the sequence
+expires. For a command you can type slowly, press **:** while selected, type
+**BopbopExplain**, then **Enter**. Vim inserts the selection's `'<,'>` range
+automatically. Both paths open a question prompt; type your question and press
+**Enter** to send it. Use `\br` or `:BopbopEdit` for a proposed replacement.
 The winbar changes with Visual mode, an active request and a review. It shows
 installed keys, or command alternatives when a user mapping occupies a key.
 Normal Vim movement, **Ctrl-D/U**, insert mode and editing remain native.
+
+### Inspector keys while editing
+
+**F2–F9** work in Neovim's Normal, Visual and Insert modes. They control the
+connected BopBop session through the same socket, without a model request:
+
+| Key | Action |
+|---|---|
+| F2–F5 | Show BopBop's Docs, Result, Context or File inspector |
+| F6 | In tmux, focus BopBop's chat input; preserve the editor selection |
+| F7 | Pin / unpin the inspector snapshot |
+| F8 | Attach the inspector's selected body lines or current body line to the next chat question |
+| F9 | Show / hide BopBop's inspector |
+
+F8 uses the **inspector's** cursor/selection. Focus that reader with F6 and
+move onto a numbered body line first. For the **Neovim** selection, use
+`\be` / `\br` instead. These shortcuts are inactive while entering a question
+in Neovim's command line.
+
+In a tmux editor opened by `/editor`, BopBop's F6 focus cycle includes the
+editor after its visible readers. F6 in Neovim always returns to chat input.
+Outside tmux, change terminal windows yourself; if both apps share a terminal,
+`:q` returns to BopBop. The other inspector keys still update BopBop's view,
+which becomes visible when you return. Restart both processes after upgrading
+the plugin or terminal code.
+
+Existing function-key mappings are preserved. The winbar shows command
+alternatives for occupied F6/F9 keys: `:BopbopFocus` / `:BopbopPane`. Other
+alternatives are `:BopbopDocs`, `:BopbopResult`, `:BopbopContext`, `:BopbopFile`,
+`:BopbopPin` and `:BopbopAttach`. Customize the corresponding `keys` entries
+(`docs`, `result`, `context`, `file`, `focus`, `pin`, `attach`, `pane`) in setup.
 
 | Action | Default / command |
 |---|---|
@@ -188,17 +226,20 @@ metadata may remain but `editor list` ignores endpoints that do not answer.
 ```sh
 server/.venv/bin/pytest server/tests/test_editor.py server/tests/test_tui.py -q
 BOPBOP_LIVE_EDITOR_TEST=1 server/.venv/bin/pytest \
-  server/tests/test_editor.py::test_live_gpt_oss_explain_edit_apply_undo -q -s
+  server/tests/test_editor.py server/tests/test_tui.py -q -s
 ```
 
-Tests use actual headless Neovim, sockets, managed-terminal PTYs and fixture
+Tests use actual headless and interactive Neovim, sockets, managed-terminal PTYs and fixture
 Ollama replies. Launcher regressions run through `bin/bopbop`, including a
 service env file and a tmux server whose PATH differs from the caller's. CI
 installs Neovim 0.11.5 and tmux so those tests have real editor dependencies.
 The opt-in local-model test explains a function, proposes a
 change, applies it, executes the generated Python, undoes it and confirms the
-original disk file was never saved. Test transcripts stay in pytest's temporary
-directory.
+original disk file was never saved. The interactive tmux test drives Visual
+selection, literal default leader keys, the question prompt, every F2–F9 key,
+focus round trips, review apply and undo. Enable `BOPBOP_LIVE_EDITOR_TEST=1`
+to run that same keystroke sequence against GPT OSS 20B. Screens and timings
+stay in pytest's temporary directory.
 
 API references: [Neovim API](https://neovim.io/doc/user/api/),
 [region functions](https://neovim.io/doc/user/vimfn/#getregion()), and

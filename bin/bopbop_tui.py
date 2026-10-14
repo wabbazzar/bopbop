@@ -114,6 +114,7 @@ class TerminalUI:
         self.pending_tools = {}
         self.editor_bridge = None
         self.editor_task = None
+        self.editor_pane = None
         self.editor_listing_cache = None
         self.editor_preview_cache = None
         self.inspector_search = SearchToolbar()
@@ -492,9 +493,13 @@ class TerminalUI:
                 + '\n\n◆ editor browser\n'
                 '  /editor · ↑↓ files · →/Tab enter folder · ← parent · Enter open · Esc close\n'
                 '  Neovim v/V select · <leader>be explain · <leader>br edit\n'
+                '  Default leader: backslash → b → e quickly; then type your question and Enter\n'
+                '  Or Visual :BopbopExplain / :BopbopEdit · Vim supplies the selection range\n'
                 '  Review <leader>ba apply · <leader>bd discard\n'
                 '◆ inspector\n'
                 '  F2 Docs · F3 Result · F4 Context · F5 File · F6 focus · F7 pin · F8 attach · F9 pane\n'
+                '  These keys also work in Neovim · F6 returns to chat in tmux; cycles back after readers\n'
+                '  F8 attaches inspector body lines; Neovim selections use explain/edit\n'
                 '  Drag in a reader to select and copy · y copies a selection or current line\n'
                 '  Alt-Left/Right snapshots · Alt-−/+ resize · Ctrl-Space select body lines\n')
             return
@@ -548,13 +553,16 @@ class TerminalUI:
             header = f'{item.title}\n{item.id} · {item.created}\n{item.size:,} bytes · SHA256 {item.digest[:16]}\n'
             meta = item.metadata
             if item.kind == 'result':
-                telemetry = meta.get('telemetry', {})
-                header += (f'{"OK" if meta.get("ok") else "Incomplete / failed"} · {meta.get("duration_ms", "?")} ms'
-                           f' · state {telemetry.get("state") or "unreported"}'
-                           f' · truncated {json.dumps(telemetry["truncated"]) if telemetry.get("truncated") is not None else "unreported"}\n')
-                header += 'Arguments: ' + safe_text(json.dumps(meta.get('arguments', {}), ensure_ascii=False)) + '\n'
-                header += ('No completed result received.\n' if meta.get('complete') is False else
-                           'Complete returned tool result; source omissions remain omitted.\n')
+                if meta.get('editor'):
+                    header += 'Model response · review in Neovim; no tools executed\n'
+                else:
+                    telemetry = meta.get('telemetry', {})
+                    header += (f'{"OK" if meta.get("ok") else "Incomplete / failed"} · {meta.get("duration_ms", "?")} ms'
+                               f' · state {telemetry.get("state") or "unreported"}'
+                               f' · truncated {json.dumps(telemetry["truncated"]) if telemetry.get("truncated") is not None else "unreported"}\n')
+                    header += 'Arguments: ' + safe_text(json.dumps(meta.get('arguments', {}), ensure_ascii=False)) + '\n'
+                    header += ('No completed result received.\n' if meta.get('complete') is False else
+                               'Complete returned tool result; source omissions remain omitted.\n')
             elif item.kind == 'context':
                 header += f'Exact outbound JSON · {len(meta.get("removed_messages", []))} messages pruned\n'
                 usage = meta.get('usage')
@@ -668,7 +676,7 @@ class TerminalUI:
                    self.editor_bridge.id, str(path)]
         if os.environ.get('TMUX'):
             try:
-                split = ['tmux', 'split-window', '-h', '-c', str(self.args.workspace)]
+                split = ['tmux', 'split-window', '-h', '-P', '-F', '#{pane_id}', '-c', str(self.args.workspace)]
                 if os.environ.get('TMUX_PANE'):
                     split += ['-t', os.environ['TMUX_PANE']]
                 pane_command = ['env', f'PATH={os.environ.get("PATH", "")}',
@@ -677,6 +685,7 @@ class TerminalUI:
                 result = subprocess.run([*split, shlex.join(pane_command)],
                                         capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
+                    self.editor_pane = result.stdout.strip()
                     self.notice = 'Neovim opened in tmux · select v/V → explain/edit'
                     return
                 self.append(f'tmux split failed: {safe_text(result.stderr.strip())}\n')
@@ -700,6 +709,46 @@ class TerminalUI:
             self.append(self.notice + '\n')
         finally:
             self.editor_task = None
+
+    def shortcut(self, key, from_editor=False):
+        """The same inspector controls for the chat terminal and connected editor."""
+        views = {'f2': 'docs', 'f3': 'result', 'f4': 'context', 'f5': 'file'}
+        try:
+            if key in views:
+                self.switch_view(views[key])
+            elif key == 'f6':
+                if from_editor:
+                    if self.editor_task or not os.environ.get('TMUX_PANE'):
+                        raise ValueError('Switch to the BopBop terminal, or :q to return when sharing one terminal')
+                    subprocess.run(['tmux', 'select-pane', '-t', os.environ['TMUX_PANE']],
+                                   check=True, capture_output=True, timeout=2)
+                    self.app.layout.focus(self.input_control)
+                elif self.app.layout.has_focus(self.input_control):
+                    self.app.layout.focus(self.inspector if self.inspector_visible else self.transcript)
+                elif self.app.layout.has_focus(self.inspector) and self.app.output.get_size().columns >= 100:
+                    self.app.layout.focus(self.transcript)
+                else:
+                    self.app.layout.focus(self.input_control)
+                    if self.editor_pane:
+                        result = subprocess.run(['tmux', 'select-pane', '-t', self.editor_pane],
+                                                capture_output=True, timeout=2)
+                        if result.returncode:
+                            self.editor_pane = None  # editor was closed; keep chat usable
+            elif key == 'f7':
+                self.pin()
+            elif key == 'f8':
+                doc = self.inspector.buffer.document
+                start, end = doc.selection_range() if doc.selection else (doc.cursor_position, doc.cursor_position)
+                first = doc.translate_index_to_position(start)[0] - self.inspector_body_start + 1
+                last = doc.translate_index_to_position(end)[0] - self.inspector_body_start + 1
+                self.attach(first, last)
+            elif key == 'f9':
+                self.toggle_pane()
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            if from_editor:
+                raise ValueError(str(exc)) from exc
+            self.notice = str(exc)
+        self.app.invalidate()
 
     def submit_editor(self, request):
         if self.worker:
@@ -789,7 +838,8 @@ class TerminalUI:
             self.editor_bridge = EditorBridge(self.args.workspace, self.submit_editor, self.cancel, self.args.model,
                 lambda request_id, outcome: self.append(
                     f'\nNeovim review {request_id[:8]}: {outcome}'
-                    + (' to unsaved buffer.\n' if outcome == 'applied' else '.\n')))
+                    + (' to unsaved buffer.\n' if outcome == 'applied' else '.\n')),
+                control=lambda key: self.shortcut(key, from_editor=True))
             await self.editor_bridge.start()
         except (ValueError, OSError) as exc:
             if self.editor_bridge:
@@ -893,28 +943,9 @@ class TerminalUI:
             else:
                 self.app.layout.focus(self.transcript)
                 self.transcript.buffer.cursor_up(count=8) if delta < 0 else self.transcript.buffer.cursor_down(count=8)
-        @self.keys.add('f6')
-        def focus(event):
-            if self.app.layout.has_focus(self.input_control):
-                self.app.layout.focus(self.inspector if self.inspector_visible else self.transcript)
-            elif self.app.layout.has_focus(self.inspector) and self.app.output.get_size().columns >= 100:
-                self.app.layout.focus(self.transcript)
-            else:
-                self.app.layout.focus(self.input_control)
-        for key, mode in [('f2', 'docs'), ('f3', 'result'), ('f4', 'context'), ('f5', 'file')]:
-            self.keys.add(key)(lambda event, mode=mode: self.switch_view(mode))
-        @self.keys.add('f7')
-        def pin(event): self.pin()
-        @self.keys.add('f8')
-        def attach(event):
-            doc = self.inspector.buffer.document
-            start, end = doc.selection_range() if doc.selection else (doc.cursor_position, doc.cursor_position)
-            first = doc.translate_index_to_position(start)[0] - self.inspector_body_start + 1
-            last = doc.translate_index_to_position(end)[0] - self.inspector_body_start + 1
-            try: self.attach(first, last)
-            except ValueError as exc: self.notice = str(exc)
-        @self.keys.add('f9')
-        def pane(event): self.toggle_pane()
+        for n in range(2, 10):
+            key = f'f{n}'
+            self.keys.add(key)(lambda event, key=key: self.shortcut(key))
         @self.keys.add('escape', 'left')
         def older(event): self.cycle_snapshot(-1)
         @self.keys.add('escape', 'right')

@@ -2,9 +2,13 @@
 local M = { state = 'disconnected', pending = nil, review = nil }
 local uv, api = vim.uv, vim.api
 local defaults = { explain = '<leader>be', edit = '<leader>br', apply = '<leader>ba',
-  discard = '<leader>bd', cancel = '<leader>bc', retry = '<leader>bt' }
+  discard = '<leader>bd', cancel = '<leader>bc', retry = '<leader>bt',
+  docs = '<F2>', result = '<F3>', context = '<F4>', file = '<F5>',
+  focus = '<F6>', pin = '<F7>', attach = '<F8>', pane = '<F9>' }
 local commands = { explain = 'BopbopExplain', edit = 'BopbopEdit', apply = 'BopbopApply',
-  discard = 'BopbopDiscard', cancel = 'BopbopCancel', retry = 'BopbopRetry' }
+  discard = 'BopbopDiscard', cancel = 'BopbopCancel', retry = 'BopbopRetry',
+  docs = 'BopbopDocs', result = 'BopbopResult', context = 'BopbopContext', file = 'BopbopFile',
+  focus = 'BopbopFocus', pin = 'BopbopPin', attach = 'BopbopAttach', pane = 'BopbopPane' }
 local function id() return vim.fn.sha256(tostring(uv.hrtime()) .. tostring(math.random())):sub(1, 32) end
 local function notify(text, level)
   M.message = text
@@ -23,13 +27,14 @@ local function key_hint(name, mode, buffer)
   if key and key ~= false then
     local found = vim.fn.maparg(expand_key(key), mode, false, true)
     if found.desc == 'BopBop ' .. name and (not buffer or found.buffer == 1) then
-      return expand_key(key) .. ' ' .. name
+      return expand_key(key):gsub('<(F%d+)>', '%1') .. ' ' .. name
     end
   end
   return ':' .. commands[name]
 end
 function M.hint()
   local parts = { '● bopbop · ' .. M.state }
+  local width = api.nvim_win_get_width(0)
   local mode = vim.fn.mode()
   if M.review and api.nvim_get_current_buf() == M.review then
     if M.pending and M.pending.action == 'edit' then table.insert(parts, key_hint('apply', 'n', true)) end
@@ -42,7 +47,16 @@ function M.hint()
   elseif M.state == 'retry available' then
     table.insert(parts, key_hint('retry', 'n'))
   else
-    table.insert(parts, 'v/V select → explain / edit')
+    table.insert(parts, width < 90 and 'v/V select' or 'v/V select → explain / edit')
+  end
+  local key_mode = (mode == 'v' or mode == 'V' or mode == '\22') and 'x'
+    or mode:sub(1, 1) == 'i' and 'i' or 'n'
+  if mode:sub(1, 1) ~= 'c' then
+    table.insert(parts, key_hint('focus', key_mode))
+    table.insert(parts, key_hint('pane', key_mode))
+  end
+  while #parts > 1 and vim.fn.strdisplaywidth(table.concat(parts, ' · ')) >= width do
+    table.remove(parts)  -- retain connection state and selection/review actions in narrow panes
   end
   return (table.concat(parts, ' · '):gsub('%%', '%%%%'))
 end
@@ -245,7 +259,10 @@ function M.request(action, whole, prompt)
   end
   p.action = action
   local function submit(value)
-    if not value or value:match('^%s*$') then return end
+    if not value or value:match('^%s*$') then
+      notify(value and 'No question entered · nothing sent' or 'Prompt cancelled · nothing sent')
+      return
+    end
     p.prompt = value; M.pending = p; M.retry()
   end
   local label = string.format('%s · %s · lines %d–%d · %d B · shared session / no tools: ',
@@ -313,6 +330,15 @@ function M.setup(opts)
   command('BopbopConnect', function(arg) M.connect(arg.args) end, { nargs = 1 })
   command('BopbopStatus', function() notify(M.hint()) end)
   map('cancel', 'n', M.cancel); map('retry', 'n', M.retry)
+  for n, name in ipairs({ 'docs', 'result', 'context', 'file', 'focus', 'pin', 'attach', 'pane' }) do
+    local function control()
+      rpc({ op = 'control', key = 'f' .. (n + 1) }, function(reply)
+        if reply.error then notify(reply.error, vim.log.levels.WARN) end
+      end)
+    end
+    command(commands[name], control)
+    for _, mode in ipairs({ 'n', 'x', 'i' }) do map(name, mode, control) end
+  end
   if opts.hints ~= false then
     vim.o.winbar = vim.o.winbar .. '%#DiagnosticInfo# %{v:lua.require("bopbop").hint()}%*'
   end

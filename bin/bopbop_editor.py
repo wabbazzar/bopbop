@@ -113,10 +113,11 @@ def edit_result(answer, request):
 
 
 class EditorBridge:
-    def __init__(self, workspace, submit, cancel, model, resolved=None):
+    def __init__(self, workspace, submit, cancel, model, resolved=None, control=None):
         self.workspace = Path(workspace).resolve()
         self.submit, self.cancel, self.model = submit, cancel, model
         self.resolved = resolved
+        self.control = control
         self.id = uuid.uuid4().hex
         self.root = private_dir()
         self.socket = self.root / (self.id + '.sock')
@@ -175,6 +176,14 @@ class EditorBridge:
                 self.state = 'connected'
             return {'session': self.id, 'workspace': str(self.workspace), 'model': self.model,
                     'status': 'working' if self.active else 'connected'}
+        if op == 'control':
+            key = data.get('key')
+            if not isinstance(key, str) or key not in {f'f{n}' for n in range(2, 10)}:
+                raise ValueError('Unknown terminal shortcut')
+            if not self.control:
+                raise ValueError('Terminal controls unavailable in this session')
+            self.control(key)
+            return {'status': 'ok'}
         request_id = identifier(data.get('id'))
         record = self.records.get(request_id)
         if record and record['client'] != client:

@@ -217,7 +217,7 @@ input stays fixed and F9 returns to the conversation.
 | Control | Action |
 |---|---|
 | F2 / F3 / F4 / F5 | Tool docs / returned result / exact model request / file or diff |
-| F6 | Cycle input, inspector and conversation focus |
+| F6 | Cycle input, inspector and conversation focus, then the connected tmux editor |
 | F7 | Pin/unpin the current snapshot; new events do not replace a pinned view |
 | Alt-Left / Alt-Right | Previous/next retained snapshot in this view |
 | Alt-`-` / Alt-`+` | Narrow/widen the inspector |
@@ -292,6 +292,16 @@ request an edit. Enter a prompt; the response opens a review split. In the
 review, **`<leader>ba`** applies and **`<leader>bd`** discards. **u** undoes;
 files are never silently saved. The winbar shows the available keys and state.
 **`<leader>bc`** cancels; **`<leader>bt`** retries a retained request.
+The default leader is backslash: press **backslash → b → e** quickly while
+selected, then enter your question. Alternatively, press **:** while selected,
+type **BopbopExplain** and press **Enter**; Vim supplies the selection range.
+
+**F2–F9 also work inside Neovim** (Normal, Visual and Insert modes). They control
+BopBop's inspector; **F6** returns to chat input in tmux and **F9** toggles the
+inspector. BopBop's F6 cycle returns to the editor after its readers. **F8**
+attaches the inspector's selection, while `\be` / `\br` use Neovim's selection.
+Existing Neovim mappings are preserved. Restart the terminal and editor after
+upgrading to load new bindings.
 
 Selections include unsaved text and use the same conversation/model. These
 focused turns disable tools so a proposed edit cannot bypass review. Changes

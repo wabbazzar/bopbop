@@ -1,5 +1,6 @@
 """Real Neovim API/Visual selections and real managed-TUI/socket/model integration."""
 import asyncio
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from test_cli_tools import ROOT, installed, local, runtime_for
-from test_tui import ManagedTerminal
+from test_tui import ManagedTerminal, TmuxTerminal
 from bopbop_editor import EditorBridge, validate_request, edit_result, private_dir, sessions
 
 NVIM = shutil.which('nvim')
@@ -156,11 +157,31 @@ def test_socket_lifecycle_and_validation(bridge, tmp_path):
     assert not b.socket.exists() and not b.descriptor.exists()
 
 
+def test_editor_controls_validate_session_and_do_not_submit_model_work(bridge):
+    b, received = bridge
+    data = dict(session=b.id, client=uuid.uuid4().hex, op='control', key='f6')
+    with pytest.raises(ValueError, match='unavailable'):
+        b.dispatch(data)
+    controls = []
+    b.control = controls.append
+    for n in range(2, 10):
+        assert b.dispatch(dict(data, key=f'f{n}')) == {'status': 'ok'}
+    for invalid in ['f1', 'f10', 'run_command', None, [], {}]:
+        with pytest.raises(ValueError, match='Unknown terminal shortcut'):
+            b.dispatch(dict(data, key=invalid))
+    with pytest.raises(ValueError, match='Wrong BopBop'):
+        b.dispatch(dict(data, session=uuid.uuid4().hex))
+    assert controls == [f'f{n}' for n in range(2, 10)]
+    assert received == [] and not b.records and b.active is None
+
+
 def test_real_visual_boundaries_unicode_reverse_exclusive_block_and_maps(tmp_path):
     path = json.dumps(str(tmp_path / 'example.py'))
     nvim_script(tmp_path, f'''
 vim.g.mapleader = ' '
 vim.keymap.set('x', '<leader>be', ':echo "user"<CR>')
+vim.keymap.set('n', '<F6>', ':echo "user focus"<CR>')
+vim.keymap.set('x', '<F9>', ':echo "user pane"<CR>')
 b.setup({{keys = {{edit = '<leader>bx'}}}})
 vim.cmd('file ' .. {path})
 vim.api.nvim_buf_set_lines(0, 0, -1, true, {{'aé🙂z', 'second', 'third'}})
@@ -169,7 +190,10 @@ local p = b.capture()
 eq('é🙂', p.text); eq({{0, 1, 0, 7}}, p.range)
 assert(b.hint():find(':BopbopExplain', 1, true))
 assert(b.hint():find(' bx edit', 1, true))
+assert(b.hint():find(':BopbopPane', 1, true))
 assert(vim.fn.maparg('<leader>be', 'x'):find('user', 1, true))
+assert(vim.fn.maparg('<F6>', 'n'):find('user focus', 1, true))
+assert(vim.fn.maparg('<F9>', 'x'):find('user pane', 1, true))
 select_region('v', {{1, 3}}, {{1, 1}})
 eq('é🙂', b.capture().text)
 select_region('v', {{1, 7}}, {{2, 2}})
@@ -190,6 +214,7 @@ vim.cmd('normal! ' .. vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
 assert(not pcall(b.capture))
 eq('buffer', b.capture(true).mode)
 assert(vim.fn.maparg('<C-d>', 'n') == '')
+assert(b.hint():find(':BopbopFocus', 1, true))
 ''')
 
 
@@ -266,8 +291,9 @@ def editor_model():
                 time.sleep(2)
             answer = json.dumps({'replacement': 'return 42', 'summary': 'Return the requested constant'}) if payload.get('format') else 'It returns a value.'
             self.send_response(200); self.end_headers()
-            self.wfile.write(json.dumps({'message': {'content': answer}, 'done': True,
-                'prompt_eval_count': 42, 'eval_count': 12, 'eval_duration': 10000000}).encode() + b'\n')
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):  # cancellation closes the model stream
+                self.wfile.write(json.dumps({'message': {'content': answer}, 'done': True,
+                    'prompt_eval_count': 42, 'eval_count': 12, 'eval_duration': 10000000}).encode() + b'\n')
         def log_message(self, *args): pass
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever); thread.start()
@@ -471,3 +497,151 @@ eq({{'NEW', '', 'last'}}, vim.api.nvim_buf_get_lines(source, 0, -1, true))
 eq({{'independent work'}}, vim.api.nvim_buf_get_lines(other, 0, -1, true))
 ''', b)
     assert received[0]['prompt'] == 'Use the installed key'
+
+
+@pytest.mark.parametrize('live,columns', [(False, 240), (False, 160), (True, 240)],
+                         ids=['fixture-wide', 'fixture-narrow', 'gpt-oss'])
+def test_terminal_keys_selection_prompt_and_inspector(tmp_path, installed, editor_model, live, columns):
+    if live and os.environ.get('BOPBOP_LIVE_EDITOR_TEST') != '1':
+        pytest.skip('Opt-in real local model acceptance')
+    source = tmp_path / 'example.py'
+    original = 'def increment(x):\n    return x + 1\n'
+    source.write_text(original)
+    url, received = editor_model
+    term = TmuxTerminal(installed, tmp_path, columns=columns, extra_env={
+        'BOPBOP_OLLAMA_HOST': 'http://127.0.0.1:11434' if live else url})
+    timings = {}
+    try:
+        term.wait('bopbop>')
+        start = time.monotonic()
+        term.send('/editor example.py'); term.key('Enter')
+        term.wait('● bopbop · connected', pane='1')
+        timings['editor_connected_seconds'] = time.monotonic() - start
+        assert term.active() == '1'
+        term.send('ggVj', pane='1')
+        term.wait('\\be explain', pane='1')
+        term.send('\\be', pane='1')
+        term.wait('shared session / no tools:', pane='1')
+        start = time.monotonic()
+        term.send('Explain this function in one short sentence.', pane='1'); term.key('Enter', pane='1')
+        screen = term.wait('BopBop · explain · NOT APPLIED', pane='1', timeout=120)
+        timings['explain_seconds'] = time.monotonic() - start
+        assert 'Prompt: Explain this function' in screen
+        term.wait('Finished in')
+        (tmp_path / 'explanation-screen.txt').write_text(screen)
+        term.send('\\bd', pane='1')
+        term.wait('connected', pane='1', absent='NOT APPLIED')
+        # These keys are pressed in Neovim, not injected into the BopBop pane.
+        term.key('F9', pane='1'); term.wait('DOCS')
+        term.key('F9', pane='1'); term.wait('bopbop>', absent='DOCS')
+        for key, title, evidence in [('F2', 'DOCS', 'list_files'),
+                                    ('F3', 'RESULT', 'Neovim'),
+                                    ('F4', 'CONTEXT', 'Explain this function'),
+                                    ('F5', 'FILE', 'def increment(x):')]:
+            term.key(key, pane='1'); term.wait(title); term.wait(evidence)
+            if key == 'F3':
+                term.wait('Model response', absent='Incomplete / failed')
+        term.key('F7', pane='1'); term.wait('PINNED')
+        term.key('F7', pane='1'); term.wait('FILE', absent='PINNED')
+        term.key('F6', pane='1'); term.wait_active('0')
+        term.key('F6'); term.wait('Inspector focused')
+        term.send('jjjjj')  # first numbered evidence line, below the inspector header
+        term.key('F8', pane='1'); term.wait('Attached')
+        if columns >= 200:
+            term.key('F6'); term.wait('Conversation focused')
+        term.key('F6')
+        term.wait_active('1')
+        # Changing focus and inspector views must preserve the native Visual selection.
+        term.send('ggVj', pane='1')
+        term.key('F6', pane='1'); term.wait_active('0')
+        for _ in range(3 if columns >= 200 else 2):
+            term.key('F6')
+        term.wait('-- VISUAL LINE --', pane='1')
+        term.send('\\br', pane='1'); term.wait('shared session / no tools:', pane='1')
+        start = time.monotonic()
+        term.send('Change increment(x) to return the constant 42 for every input. '
+                  'Keep its name and parameter. Only replace these two selected lines.', pane='1')
+        term.key('Enter', pane='1')
+        screen = term.wait('BopBop · edit · NOT APPLIED', pane='1', timeout=120)
+        timings['edit_seconds'] = time.monotonic() - start
+        (tmp_path / 'edit-screen.txt').write_text(screen)
+        assert source.read_text() == original
+        term.send('\\ba', pane='1'); term.wait('Applied to unsaved buffer', pane='1')
+        # Export for verification with an explicit Vim write to a different temporary file.
+        term.send(':w! accepted.py', pane='1'); term.key('Enter', pane='1')
+        term.wait('written', pane='1')
+        if live:
+            namespace = {}
+            exec(compile((tmp_path / 'accepted.py').read_text(), 'accepted.py', 'exec'), namespace)
+            assert namespace['increment'](7) == namespace['increment'](-1) == 42
+        else:
+            assert (tmp_path / 'accepted.py').read_text() == 'return 42\n'
+            assert len(received) == 2
+            assert all(payload['tools'] == [] for payload in received)
+        term.send('u', pane='1'); term.wait('return x + 1', pane='1')
+        term.send(':w! undone.py', pane='1'); term.key('Enter', pane='1')
+        term.wait('written', pane='1')
+        assert (tmp_path / 'undone.py').read_text() == source.read_text() == original
+        (tmp_path / 'agent-screen.txt').write_text(term.text())
+        (tmp_path / 'timings.json').write_text(json.dumps(timings, indent=2))
+        print('Interactive editor evidence:', tmp_path, timings)
+        term.send(':qa!', pane='1'); term.key('Enter', pane='1')
+        term.wait('bopbop>')
+    finally:
+        term.close()
+
+
+def test_terminal_visual_command_cancel_retry_insert_keys_and_closed_editor(tmp_path, installed, editor_model):
+    url, received = editor_model
+    source = tmp_path / 'long.py'
+    original = ''.join(f'print("private row {n}")\n' for n in range(100))
+    source.write_text(original)
+    term = TmuxTerminal(installed, tmp_path, extra_env={'BOPBOP_OLLAMA_HOST': url})
+    try:
+        term.wait('bopbop>'); term.send('/editor long.py'); term.key('Enter')
+        term.wait('● bopbop · connected', pane='1')
+        # Native Ctrl-D moves the editor's cursor; these keys never reach chat.
+        term.key('C-d', pane='1')
+        term.send(":lua vim.fn.writefile({tostring(vim.fn.line('.'))}, 'cursor.txt')", pane='1')
+        term.key('Enter', pane='1')
+        deadline = time.monotonic() + 3
+        while not (tmp_path / 'cursor.txt').exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert int((tmp_path / 'cursor.txt').read_text()) > 1
+        # Insert-mode F9 controls the inspector without inserting escape codes or leaving Insert mode.
+        term.send('ggi', pane='1'); term.wait('-- INSERT --', pane='1')
+        term.key('F9', pane='1'); term.wait('DOCS')
+        term.wait('-- INSERT --', pane='1')
+        term.key('F9', pane='1'); term.wait('bopbop>', absent='DOCS')
+        term.key('Escape', pane='1')
+        # Vim's ranged command is a usable alternative to the leader sequence.
+        term.send('ggV:BopbopExplain', pane='1'); term.key('Enter', pane='1')
+        term.wait('shared session / no tools:', pane='1')
+        term.key('Escape', pane='1')
+        term.wait('connected', pane='1', absent='shared session / no tools:')
+        assert received == []
+        term.send('ggV\\be', pane='1'); term.wait('shared session / no tools:', pane='1')
+        term.key('Enter', pane='1')
+        term.wait('connected', pane='1', absent='shared session / no tools:')
+        assert received == []
+        term.send('ggV\\be', pane='1'); term.wait('shared session / no tools:', pane='1')
+        term.send('SLOW_TEST explain this line', pane='1'); term.key('Enter', pane='1')
+        term.wait('working', pane='1')
+        # Wait until the fixture received the request, then cancel via the actual Normal-mode mapping.
+        deadline = time.monotonic() + 3
+        while not received and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert len(received) == 1
+        term.send('\\bc', pane='1'); term.wait('retry available', pane='1')
+        term.send('\\bt', pane='1'); term.wait('NOT APPLIED', pane='1')
+        assert len(received) == 2
+        assert all('private row 99' not in json.dumps(payload) for payload in received)
+        term.send('\\bd', pane='1'); term.wait('connected', pane='1', absent='NOT APPLIED')
+        term.send(':qa!', pane='1'); term.key('Enter', pane='1')
+        term.wait_active('0')
+        # A closed tmux editor must not leave F6 pointing at a dead pane.
+        term.key('F6'); term.wait('Conversation focused')
+        term.key('F6'); term.send('/help'); term.key('Enter'); term.wait('commands')
+        assert source.read_text() == original
+    finally:
+        term.close()

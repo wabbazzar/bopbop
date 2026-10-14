@@ -121,3 +121,21 @@ outside tmux, while tmux keeps an adjacent pane. Neovim's connection notice
 fits a narrow pane without triggering the hit-enter prompt. BopBop readers
 support mouse selection and clipboard copy (`y` for selection/current line).
 An isolated tmux test verifies the live editor pane and copying from BopBop.
+
+2026-10-14 keyboard fixes: F2–F9 now forward from Neovim's Normal, Visual and
+Insert modes to the same terminal controls. F6 returns to chat input in tmux,
+and the chat focus cycle includes the editor. Closed editor panes fall out of
+that cycle. User mappings are preserved and command alternatives remain
+available. Narrow winbars retain connection state and selection/review keys.
+Empty or cancelled prompts explicitly say that nothing was sent. Successful
+editor results have a review label instead of a failed-tool label.
+
+New acceptance tests launch the public CLI on an attached private tmux server
+and drive actual keys and question prompts. They cover every F2–F9 key, wide
+and narrow panes, native Ctrl-D, Visual selections across focus changes,
+default leader keys, ranged Vim commands, Insert mode, cancel/retry,
+apply/undo, unchanged original files and closing the editor. A same-terminal
+test checks the explicit :q return path. The real GPT OSS 20B variant executes
+the proposed function to verify it returns 42. One observed run took 22.1 s
+for explanation (16.8 s model load) and 8.5 s for editing; these are local
+measurements, not latency guarantees.
