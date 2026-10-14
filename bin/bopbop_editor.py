@@ -9,12 +9,27 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import stat
+import subprocess
 import uuid
 
 LIMIT = 256 * 1024
 SELECTION_LIMIT = 32 * 1024
+
+
+def nvim_binary():
+    requested = os.environ.get('BOPBOP_NVIM_BIN') or 'nvim'
+    binary = shutil.which(requested)
+    if not binary:
+        raise ValueError('Neovim is not on PATH. Install Neovim 0.11+ or set BOPBOP_NVIM_BIN to its full path, then restart BopBop.')
+    version = subprocess.run([binary, '--version'], capture_output=True, text=True, timeout=3)
+    first = version.stdout.splitlines()[0] if version.stdout else 'no version reported'
+    match = re.match(r'NVIM v(\d+)\.(\d+)', first)
+    if version.returncode or not match or tuple(map(int, match.groups())) < (0, 11):
+        raise ValueError(f'Neovim 0.11+ is required; found {first}')
+    return str(Path(binary).resolve())
 
 
 def private_dir():
@@ -235,6 +250,11 @@ def main():
     parser.add_argument('--connect', metavar='SESSION')
     parser.add_argument('file', nargs='?', help='workspace file, or list to list live sessions')
     args = parser.parse_args()
+    if not (args.file == 'list' and not args.connect):
+        try:
+            binary = nvim_binary()
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            parser.error(str(exc))
     active = sessions()
     if args.file == 'list' and not args.connect:
         for session in active:
@@ -249,7 +269,7 @@ def main():
     os.environ['BOPBOP_EDITOR_SESSION'] = match['session']
     os.environ['BOPBOP_EDITOR_SOCKET'] = str(private_dir() / (match['session'] + '.sock'))
     os.environ['BOPBOP_NVIM_PLUGIN'] = str(Path(__file__).resolve().parents[1] / 'editor/nvim')
-    os.execvp('nvim', ['nvim', '--cmd', 'lua vim.opt.rtp:prepend(vim.env.BOPBOP_NVIM_PLUGIN)',
+    os.execv(binary, [binary, '--cmd', 'lua vim.opt.rtp:prepend(vim.env.BOPBOP_NVIM_PLUGIN)',
                      '-c', "lua require('bopbop').setup()", '--', str(path)])
 
 

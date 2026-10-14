@@ -13,6 +13,7 @@ import shlex
 import pathlib
 import subprocess
 import shutil
+import sys
 
 from prompt_toolkit import Application
 from prompt_toolkit.application import run_in_terminal
@@ -37,7 +38,7 @@ from bopbop_tool_ui import (argument_focus, call_help_lines, call_tool_name,
                             tool_entries)
 from bopbop_inspector import (InspectorStore, Snapshot, request_snapshot, result_snapshot,
                               file_snapshot, attachment_block)
-from bopbop_editor import EditorBridge
+from bopbop_editor import EditorBridge, nvim_binary
 from bopbop_worker import TurnWorker
 
 UI_COMMANDS = {
@@ -662,14 +663,18 @@ class TerminalUI:
         path = (self.args.workspace / (parts[0] if parts else '.')).resolve()
         if not path.is_relative_to(self.args.workspace):
             raise ValueError('File must be inside this session workspace')
-        command = [str(pathlib.Path(__file__).with_name('bopbop')), 'editor', '--connect',
+        nvim = nvim_binary()  # fail visibly before suspending the terminal
+        command = [sys.executable, str(pathlib.Path(__file__).with_name('bopbop_editor.py')), '--connect',
                    self.editor_bridge.id, str(path)]
         if os.environ.get('TMUX'):
             try:
                 split = ['tmux', 'split-window', '-h', '-c', str(self.args.workspace)]
                 if os.environ.get('TMUX_PANE'):
                     split += ['-t', os.environ['TMUX_PANE']]
-                result = subprocess.run([*split, shlex.join(command)],
+                pane_command = ['env', f'PATH={os.environ.get("PATH", "")}',
+                                f'BOPBOP_EDITOR_DIR={self.editor_bridge.root}',
+                                f'BOPBOP_NVIM_BIN={nvim}', *command]
+                result = subprocess.run([*split, shlex.join(pane_command)],
                                         capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
                     self.notice = 'Neovim opened in tmux · select v/V → explain/edit'
@@ -688,6 +693,8 @@ class TerminalUI:
                                            in_executor=True)
             self.notice = ('Back from Neovim' if result.returncode == 0
                            else f'Neovim exited with status {result.returncode}')
+            if result.returncode:
+                self.append(self.notice + '. Start Neovim directly in your shell to inspect its startup error.\n')
         except (OSError, subprocess.SubprocessError) as exc:
             self.notice = f'Could not launch Neovim: {exc}'
             self.append(self.notice + '\n')

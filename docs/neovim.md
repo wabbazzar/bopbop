@@ -7,7 +7,7 @@ A response opens a review; only your editor action can apply it.
 
 ## Start
 
-Requires Linux/macOS, Python 3.10+, Neovim **0.11+**, Ollama, and the optional
+Requires Linux/macOS, Python 3.11+, Neovim **0.11+**, Ollama, and the optional
 managed terminal (`bopbop ui install`). No Neovim package manager or Python
 Neovim package is needed. The wrapper harnesses and plain CLI do not host this
 bridge.
@@ -33,6 +33,15 @@ The BopBop session and editor bridge keep running while Neovim is visible.
 If a tmux split fails, BopBop reports the error and opens Neovim in the
 current terminal. Paths containing spaces work in the browser; quote them if
 you type a full path explicitly.
+
+The terminal launcher preserves your shell's tool search path ahead of paths
+from the service env file. New tmux editor panes receive the same path and
+private bridge directory as BopBop. Neovim availability and version are checked
+before hiding the terminal. Missing/outdated editors are reported in the
+conversation; startup exits remain visible after the screen is restored.
+To choose a specific installation, set `BOPBOP_NVIM_BIN=/path/to/nvim` before
+starting BopBop. After updating launcher settings, quit and reopen the CLI so
+the running process receives the new environment.
 
 In the BopBop pane, drag across conversation or inspector text to select and
 copy it. With a reader focused, `y` copies the selection or cursor line.
@@ -183,7 +192,10 @@ BOPBOP_LIVE_EDITOR_TEST=1 server/.venv/bin/pytest \
 ```
 
 Tests use actual headless Neovim, sockets, managed-terminal PTYs and fixture
-Ollama replies. The opt-in local-model test explains a function, proposes a
+Ollama replies. Launcher regressions run through `bin/bopbop`, including a
+service env file and a tmux server whose PATH differs from the caller's. CI
+installs Neovim 0.11.5 and tmux so those tests have real editor dependencies.
+The opt-in local-model test explains a function, proposes a
 change, applies it, executes the generated Python, undoes it and confirms the
 original disk file was never saved. Test transcripts stay in pytest's temporary
 directory.

@@ -22,7 +22,7 @@ from test_inspector import model_server
 
 
 class ManagedTerminal:
-    def __init__(self, installed, workspace, mode='single', columns=100, rows=28, extra_env=None):
+    def __init__(self, installed, workspace, mode='single', columns=100, rows=28, extra_env=None, launcher=False):
         self.master, self.slave = pty.openpty()
         self.screen = pyte.Screen(columns, rows)
         self.stream = pyte.Stream(self.screen)
@@ -32,7 +32,9 @@ class ManagedTerminal:
         env.update(TERM='xterm-256color', BOPBOP_OLLAMA_HOST='http://127.0.0.1:1')
         env.pop('NO_COLOR', None)
         env.update(extra_env or {})
-        self.process = subprocess.Popen([sys.executable, str(ROOT / 'bin/bopbop-local.py'),
+        command = ([str(ROOT / 'bin/bopbop'), 'local'] if launcher else
+                   [sys.executable, str(ROOT / 'bin/bopbop-local.py')])
+        self.process = subprocess.Popen([*command,
             '--ui', mode, '--banner', 'off', '--color', 'always', '--workspace', str(workspace),
             '--context-dir', str(installed.parents[1]), '--packs', 'test'],
             stdin=self.slave, stdout=self.slave, stderr=self.slave, env=env)
@@ -184,6 +186,72 @@ def test_editor_file_reader_accepts_typed_paths_and_paging(installed, tmp_path):
     finally: terminal.close()
 
 
+def test_public_launcher_keeps_shell_tools_available_for_editor(installed, tmp_path):
+    nvim = shutil.which('nvim')
+    if not nvim:
+        pytest.skip('Neovim is required')
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'env').write_text('PATH=/usr/bin:/bin\n')
+    commands = tmp_path / 'shell-tools'
+    commands.mkdir()
+    (commands / 'nvim').symlink_to(nvim)
+    (tmp_path / 'example.py').write_text('print(42)\n')
+    terminal = ManagedTerminal(installed, tmp_path, launcher=True, extra_env={
+        'TMUX': '', 'BOPBOP_HOME': str(home),
+        'PATH': str(commands) + os.pathsep + os.environ['PATH']})
+    try:
+        terminal.wait('Ready')
+        terminal.send('/editor example.py\r')
+        terminal.wait('BopBop: Connected')
+        terminal.send(':q!\r')
+        terminal.wait('Back from Neovim')
+        terminal.send('/exit\r'); terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+    finally:
+        terminal.close()
+
+
+@pytest.mark.parametrize('version,expected', [(None, 'Neovim is not on PATH'), ('0.10.4', 'Neovim 0.11+ is required')])
+def test_unavailable_editor_is_reported_in_place(installed, tmp_path, version, expected):
+    binary = tmp_path / 'nvim'
+    if version:
+        binary.write_text(f'#!/bin/sh\nprintf "NVIM v{version}\\n"\n')
+        binary.chmod(0o755)
+    (tmp_path / 'example.py').write_text('print(42)\n')
+    terminal = ManagedTerminal(installed, tmp_path, extra_env={'TMUX': '', 'BOPBOP_NVIM_BIN': str(binary)})
+    try:
+        terminal.wait('Ready')
+        row = terminal.screen.cursor.y
+        terminal.send('/editor example.py\r')
+        terminal.wait(expected)
+        assert terminal.screen.cursor.y == row
+        terminal.send('next draft')
+        terminal.wait('next draft')
+        assert expected in terminal.text
+        terminal.send('\x15/exit\r'); terminal.process.wait(timeout=5)
+    finally:
+        terminal.close()
+
+
+def test_editor_startup_exit_stays_visible_after_terminal_restore(installed, tmp_path):
+    binary = tmp_path / 'nvim'
+    binary.write_text('#!/bin/sh\nif [ "$1" = --version ]; then printf "NVIM v0.11.5\\n"; else exit 23; fi\n')
+    binary.chmod(0o755)
+    (tmp_path / 'example.py').write_text('print(42)\n')
+    terminal = ManagedTerminal(installed, tmp_path, extra_env={'TMUX': '', 'BOPBOP_NVIM_BIN': str(binary)})
+    try:
+        terminal.wait('Ready')
+        terminal.send('/editor example.py\r')
+        terminal.wait('Start Neovim directly')
+        terminal.send('next draft')
+        terminal.wait('next draft')
+        assert 'Neovim exited with status 23.' in terminal.text
+        terminal.send('\x15/exit\r'); terminal.process.wait(timeout=5)
+    finally:
+        terminal.close()
+
+
 def test_mouse_drag_and_y_copy_conversation_to_system_clipboard(installed, tmp_path):
     clipboard = tmp_path / 'copied.txt'
     commands = tmp_path / 'commands'
@@ -220,21 +288,26 @@ def test_tmux_editor_split_connects_and_mouse_drag_copies(installed, tmp_path):
     helper.write_text('#!/usr/bin/env python3\nimport os,sys\n'
                       'open(os.environ["TEST_CLIPBOARD_PATH"], "wb").write(sys.stdin.buffer.read())\n')
     helper.chmod(0o755)
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'env').write_text('PATH=/usr/bin:/bin\n')
+    tmux_bin = shutil.which('tmux')
     name = 'bopbop-test-' + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix='bop-ed-') as bridge:
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 140, 0, 0))
         env = {key: val for key, val in os.environ.items() if key != 'TMUX' and not key.startswith('BOPBOP_')}
         env.update(TERM='xterm-256color', BOPBOP_EDITOR_DIR=bridge, DISPLAY=':99',
-                   PATH=str(commands) + os.pathsep + env['PATH'], TEST_CLIPBOARD_PATH=str(clipboard))
-        command = shlex.join([sys.executable, str(ROOT / 'bin/bopbop-local.py'),
+                   PATH=str(commands) + os.pathsep + env['PATH'], TEST_CLIPBOARD_PATH=str(clipboard),
+                   BOPBOP_HOME=str(home))
+        command = shlex.join(['env', f'PATH={env["PATH"]}', str(ROOT / 'bin/bopbop'), 'local',
             '--ui', 'single', '--banner', 'off', '--workspace', str(tmp_path),
             '--context-dir', str(installed.parents[1]), '--packs', 'test'])
-        process = subprocess.Popen(['tmux', '-L', name, '-f', '/dev/null', 'new-session',
+        process = subprocess.Popen([tmux_bin, '-L', name, '-f', '/dev/null', 'new-session',
                                     '-s', 'ride', command], stdin=slave, stdout=slave,
-                                   stderr=slave, env=env)
+                                   stderr=slave, env={**env, 'PATH': '/usr/bin:/bin'})
         def tmux(*args):
-            return subprocess.check_output(['tmux', '-L', name, *args], env=env, text=True,
+            return subprocess.check_output([tmux_bin, '-L', name, *args], env=env, text=True,
                                            stderr=subprocess.DEVNULL)
         try:
             deadline = time.monotonic() + 5
@@ -273,7 +346,7 @@ def test_tmux_editor_split_connects_and_mouse_drag_copies(installed, tmp_path):
             assert clipboard.read_text() == 'Type / '
             assert 'copied to system clipboard' in tmux('capture-pane', '-p', '-t', 'ride:0.0')
         finally:
-            subprocess.run(['tmux', '-L', name, 'kill-server'], env=env, capture_output=True)
+            subprocess.run([tmux_bin, '-L', name, 'kill-server'], env=env, capture_output=True)
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:

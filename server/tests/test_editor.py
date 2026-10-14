@@ -396,10 +396,14 @@ wait_for('awaiting review'); b.discard()
 def test_live_gpt_oss_explain_edit_apply_undo(tmp_path, installed):
     source = tmp_path / 'example.py'
     source.write_text('def increment(x):\n    return x + 1\n')
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'env').write_text('PATH=/usr/bin:/bin\n')
     with tempfile.TemporaryDirectory(prefix='bop-ed-') as socket_root:
         directory = Path(socket_root)
-        term = ManagedTerminal(installed, tmp_path, columns=150, rows=40, extra_env={
-            'BOPBOP_OLLAMA_HOST': 'http://127.0.0.1:11434', 'BOPBOP_EDITOR_DIR': str(directory)})
+        term = ManagedTerminal(installed, tmp_path, columns=150, rows=40, launcher=True, extra_env={
+            'BOPBOP_OLLAMA_HOST': 'http://127.0.0.1:11434', 'BOPBOP_EDITOR_DIR': str(directory),
+            'BOPBOP_HOME': str(home)})
         try:
             term.wait('bopbop>')
             descriptor = json.loads(next(directory.glob('*.json')).read_text())

@@ -78,6 +78,8 @@ bin/bopbop web build|dev|test   optional PWA build, local development, browser g
 
 The shell alias `bopbop` points to `bin/bopbop`, so these commands work from
 any directory after opening a new shell or running `source ~/.bashrc`.
+Interactive harnesses keep your shell's `PATH` ahead of service env paths so
+tools such as Neovim and tmux resolve as they do in that shell.
 `bopbop run` and the Signal service default to `BOPBOP_AGENT_HARNESS` in
 `~/.bopbop/env`. The browser app's **Settings** can override the server harness,
 model, context pack, and local context size without a restart. Saved preferences

@@ -428,6 +428,7 @@ cmd_web() {
 }
 
 cmd_agent() {
+    local terminal_path="$PATH"
     local harness="${1:-}"
     if [[ -z "$harness" ]]; then
         if [[ -f "$ENV_FILE" ]]; then
@@ -442,6 +443,9 @@ cmd_agent() {
         set -a; # shellcheck disable=SC1090
         source "$ENV_FILE"; set +a
     fi
+    # Interactive tools resolve as in the launching shell. Service-only paths
+    # remain available as fallback instead of hiding the shell's tools.
+    [[ "$PATH" == "$terminal_path" ]] || export PATH="$terminal_path:$PATH"
     export BOPBOP_CONTEXT_DIR="$ctx"
     # --profile belongs to BopBop here, rather than the wrapper's own profiles.
     local profile="${BOPBOP_AGENT_PROFILE:-}" args=()
