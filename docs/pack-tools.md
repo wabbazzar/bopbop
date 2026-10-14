@@ -234,3 +234,21 @@ Run the protocol and server tests with:
 ```bash
 server/.venv/bin/python -m pytest server/tests -q
 ```
+
+### Tools in the web/Signal workspace agent
+
+For the **Ollama** server to use native packs alongside file/command tools and
+workspace skills, set `BOPBOP_AGENT_PACKS=ice` (or comma-separated pack names)
+in `~/.bopbop/env`, then `systemctl --user restart bopbop`. Keep the browser's
+profile on the workspace agent. `BOPBOP_CLI_PACKS` only configures terminal
+launches; installing a pack alone also does not enable its native tools.
+
+For an Ice health question, the web trace should show `ice_query` or
+`ice_status`. Running repository tests or reporting missing Python packages
+means the agent chose the wrong workflow: check the enabled pack configuration
+first. A missing pandas installation is not evidence of dashboard project health.
+
+For the four-tool specialist, select Ice in browser Settings instead. Saved
+Settings override the `BOPBOP_AGENT_PROFILE` env default. Wrapper harnesses
+(Claude/Codex) use that selected profile's MCP tools; `BOPBOP_AGENT_PACKS` is
+specific to the local Ollama harness.

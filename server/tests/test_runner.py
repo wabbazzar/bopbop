@@ -3,6 +3,8 @@ import json
 import sys
 
 import runner
+from test_cli_tools import installed
+from test_inspector import model_server
 
 
 def test_quiet_agent_sends_heartbeats_and_drains_stderr(monkeypatch, tmp_path):
@@ -240,3 +242,29 @@ def test_wrapper_durations_follow_tool_ids_when_results_finish_out_of_order(monk
     async def collect(): return [event async for event in runner.run_turn('hello')]
     results = [event for event in asyncio.run(collect()) if event['kind'] == 'tool_result']
     assert [(event['id'], event['preview'], event['duration_ms']) for event in results] == [('b', 'B', 400), ('a', 'A', 800)]
+
+
+def test_web_workspace_agent_loads_server_packs_alongside_workspace_tools(
+    monkeypatch, tmp_path, installed, model_server,
+):
+    """Exercise the real server subprocess, not the terminal launcher defaults."""
+    url, requests = model_server
+    monkeypatch.setenv('BOPBOP_AGENT_HARNESS', 'ollama')
+    monkeypatch.setenv('BOPBOP_AGENT_PROFILE', '')
+    monkeypatch.setenv('BOPBOP_AGENT_PACKS', 'test')
+    monkeypatch.setenv('BOPBOP_CLI_PACKS', 'terminal-only-not-installed')
+    monkeypatch.setenv('BOPBOP_CONTEXT_DIR', str(installed.parents[1]))
+    monkeypatch.setenv('BOPBOP_DATA_DIR', str(tmp_path / 'data'))
+    monkeypatch.setenv('BOPBOP_PYTHON_BIN', sys.executable)
+    monkeypatch.setenv('BOPBOP_OLLAMA_HOST', url)
+    monkeypatch.setattr(runner, 'CONTEXT_DIR', str(installed.parents[1]))
+
+    async def collect():
+        return [event async for event in runner.run_turn('[channel: pwa]\nCheck project health.')]
+
+    events = asyncio.run(asyncio.wait_for(collect(), timeout=10))
+    assert not any(event['kind'] == 'error' for event in events)
+    assert events[-1]['kind'] == 'done'
+    names = {tool['function']['name'] for tool in requests[0]['tools']}
+    assert {'sample_count', 'read_file', 'run_command'} <= names
+    assert ''.join(e['delta'] for e in events if e['kind'] == 'text') == 'Fixture answer.'

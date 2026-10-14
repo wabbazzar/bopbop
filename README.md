@@ -357,7 +357,9 @@ bopbop agent codex --profile ice    # or claude
 
 To include Ice in every normal terminal launch, set `BOPBOP_CLI_PACKS=ice`
 in `~/.bopbop/env` and relaunch `bopbop`. `/tools` labels the pack as
-`ice-dashboard (ice)` and lists its four `ice_*` API tools.
+`ice-dashboard (ice)` and lists its four `ice_*` API tools. For the Ollama
+web/Signal workspace agent, set `BOPBOP_AGENT_PACKS=ice` and restart the service.
+Terminal-only configuration does not enable tools in the web agent.
 
 See [native pack tools](docs/pack-tools.md) for schemas, handlers, MCP, profile
 selection and server integration; [validation](docs/ice-pack-validation.md)
@@ -440,6 +442,7 @@ Everything is env vars in `~/.bopbop/env` (template: `templates/env.example`):
 | `BOPBOP_DATA_DIR` | `~/.bopbop/data` | sqlite db + downloaded attachments |
 | `BOPBOP_AGENT_HARNESS` | `claude` | server backend: `claude`, `codex`, or `ollama` |
 | `BOPBOP_AGENT_PROFILE` | unset | installed pack/profile for all server harnesses |
+| `BOPBOP_AGENT_PACKS` | unset | extra native packs for the Ollama web/Signal agent and CLI; keeps workspace tools |
 | `BOPBOP_CLI_PACKS` | unset | extra installed native packs for local terminal launches only, comma-separated |
 | `BOPBOP_CLAUDE_BIN` | `claude` | Claude Code binary |
 | `BOPBOP_CLAUDE_MODEL` | `sonnet` | model per turn |

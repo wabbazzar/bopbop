@@ -170,3 +170,21 @@ Run Ice's tests/check/build from its dashboard directory. Review private saved
 answers beside their session tool evidence, especially scope and unknown-state
 claims. Current interface details: [pack protocol](pack-tools.md) and
 [Ice specialist](../packs/ice-dashboard/README.md).
+
+## Web workspace agent regression (2026-10-14)
+
+The browser's workspace agent had no native pack enabled: terminal-only
+`BOPBOP_CLI_PACKS` does not reach the server. Enable `BOPBOP_AGENT_PACKS=ice`
+for Ollama to retain workspace skills alongside the dashboard tools.
+
+A live `POST /api/chat` using GPT-OSS 20B and the exact prompt “Check the health
+of my projects.” made one `ice_query` health call with no project filter and
+no shell commands. The API tool took 303 ms; the full two-model-call turn took
+41.8 s. The answer preserved partial coverage, stale crew data and unknown
+older open incidents. These are single-run timings, not a latency guarantee.
+
+Pack guidance now explicitly routes broad project-health questions to the
+fleet health report and distinguishes omitted evidence rows from projects.
+The server regression test launches the actual local subprocess against a
+fixture model and verifies that server packs coexist with workspace tools,
+independently of terminal-only pack settings.

@@ -16,8 +16,11 @@ bopbop agent codex --profile ice
 bopbop agent claude --profile ice
 ```
 
-For Signal/HTTP, select `BOPBOP_AGENT_PROFILE=ice` in `~/.bopbop/env` and restart
-BopBop. This is optional; installing a pack does not switch the active backend
+For Signal/HTTP, choose Ice in browser Settings, or use
+`BOPBOP_AGENT_PROFILE=ice` as an env default (saved Settings take precedence).
+For Ollama with workspace skills still available, set `BOPBOP_AGENT_PACKS=ice`
+in `~/.bopbop/env` and restart `bopbop.service`. `BOPBOP_CLI_PACKS` only enables
+terminal tools, not web/Signal tools. This is optional; installing a pack does not switch the active backend
 or profile. The local profile exposes no shell, file-writing or action tools.
 Wrapper harnesses retain their built-in capabilities.
 

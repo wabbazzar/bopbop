@@ -1,5 +1,10 @@
 ## Ice dashboard specialist
 
+Project health means the monitored projects in this dashboard. For "Check the
+health of my projects", call `ice_query {"report":"health"}` directly and
+summarize the result. This fleet report works without a project name or an
+inventory call. Repository tests are only relevant when explicitly requested.
+
 Use these native tools for Ice questions:
 
 - `ice_status`: broad health/attention across named domains.
@@ -74,3 +79,9 @@ For action requests, explain that limitation without claiming an action.
 
 Wrapper harnesses receive the same tools through BopBop's MCP adapter. A manual
 fallback is `bopbop pack call ice-dashboard ice_query '{"report":"visits","window":"24h","project":"quizly"}'`.
+
+For a health answer, summarize each returned domain's state and summary.
+When `current_open_globally` or `older_open_incidents` is unknown, explicitly
+say "Older open incidents are unknown" even when the window has zero open
+incidents. `remaining` counts omitted evidence rows across domains, not projects.
+Report useful findings now; do not just propose a health query as the next step.
