@@ -69,9 +69,10 @@ and previews stay local; browsing sends no text to the model.
 2. Press **`<leader>be`** to explain or **`<leader>br`** to request an edit.
 3. The prompt shows the file, line range and byte count. Enter your question.
    Cancelling the prompt or selecting alone sends nothing.
-4. The response opens a read-only review split. An edit shows a unified diff.
-   Narrow editor panes stack source and review so the diff stays readable.
-5. In that review, **`<leader>ba`** applies or **`<leader>bd`** discards.
+4. The response appears in the same workbench window. An edit shows a read-only
+   unified diff; an explanation is labeled **Answer**. Source buffers retain undo.
+5. In an edit review, **Enter** applies and **q** discards. In an answer, **q** closes.
+   **`<leader>ba`** / **`<leader>bd`** remain available.
    After applying, **u** undoes. **`:w`** is still your separate save action.
 
 Neovim's default leader is backslash. With the selection still highlighted,
@@ -93,23 +94,27 @@ connected BopBop session through the same socket, without a model request:
 
 | Key | Action |
 |---|---|
-| F2–F5 | Show BopBop's Docs, Result, Context or File inspector |
-| F6 | In tmux, focus BopBop's chat input; preserve the editor selection |
-| F7 | Pin / unpin the inspector snapshot |
-| F8 | Attach the inspector's selected body lines or current body line to the next chat question |
-| F9 | Show / hide BopBop's inspector |
+| F2 | Filter tools by name or description; ↑↓ choose; Enter opens documentation |
+| F3 | Pending answer/edit review, otherwise the latest tool result |
+| F4 | Exact model request and telemetry |
+| F5 | Return to the current source file |
+| F6 | Switch between chat input and the workbench in tmux |
+| F7 | Pin/unpin the displayed evidence snapshot |
+| F8 | Attach selected source text or **V**-selected evidence body lines |
+| F9 | Hide/reopen the workbench without losing buffers or undo |
 
-F8 uses the **inspector's** cursor/selection. Focus that reader with F6 and
-move onto a numbered body line first. For the **Neovim** selection, use
-`\be` / `\br` instead. These shortcuts are inactive while entering a question
-in Neovim's command line.
+Docs, results, context, file previews and reviews share one Neovim window.
+In a file preview, **e** opens the source at the current line. **q** returns
+from evidence to the source file. Use **V** then `\be` to ask about selected
+numbered evidence lines; open the source with **e** before requesting an edit.
+Opening another file reuses the same editor; native `:buffers` / `:buffer`
+remain available. Browsing does not send content to the model.
 
-In a tmux editor opened by `/editor`, BopBop's F6 focus cycle includes the
-editor after its visible readers. F6 in Neovim always returns to chat input.
-Outside tmux, change terminal windows yourself; if both apps share a terminal,
-`:q` returns to BopBop. The other inspector keys still update BopBop's view,
-which becomes visible when you return. Restart both processes after upgrading
-the plugin or terminal code.
+F9 parks Neovim in a tmux window named `bopbop-workbench`. It preserves dirty
+buffers even if chat exits; use normal Neovim save/quit commands there.
+Outside tmux, `:q` returns to BopBop when sharing one terminal. F6 explains
+that limitation. Restart both processes after upgrading the plugin or terminal.
+A separately connected editor retains its traditional review split.
 
 Existing function-key mappings are preserved. The winbar shows command
 alternatives for occupied F6/F9 keys: `:BopbopFocus` / `:BopbopPane`. Other
@@ -180,8 +185,9 @@ review boundary does not alter the session's normal tool permissions. Edit
 replies use Ollama's structured-output schema and are validated before review.
 Malformed, oversized or incomplete replacements are never applied.
 
-BopBop records the selection under **F5**, the exact model payload and usage
-under **F4**, and the explanation/diff under **F3**. Its transcript streams the
+The workbench shows the source under **F5**, the exact model payload and usage
+under **F4**, and the explanation/diff under **F3**. Selection snapshots remain
+available through `/inspect file`. Its transcript streams the
 response and reports tokens, first activity/answer latency, generation rate and
 total time. The header shows editor connection/work/review state. Apply/discard
 acknowledgements appear in the transcript when connected. The model history

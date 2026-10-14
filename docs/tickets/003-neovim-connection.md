@@ -139,3 +139,13 @@ test checks the explicit :q return path. The real GPT OSS 20B variant executes
 the proposed function to verify it returns 42. One observed run took 22.1 s
 for explanation (16.8 s model load) and 8.5 s for editing; these are local
 measurements, not latency guarantees.
+
+## Unified workbench follow-up
+
+Docs, Result, Context, File and Review now share one Neovim window. F2 filters
+all enabled tool declarations. F6 switches chat/workbench, F9 parks the editor
+without losing buffers, and file-preview `e` opens source at the current line.
+V-selected evidence supports Ask and Attach; source selections also support Edit.
+Answer reviews close with q; edit reviews apply with Enter or discard with q.
+Terminal acceptance covers multiple dirty files, cursor/undo restoration, large
+chunked snapshots and exact selected evidence in the model request.

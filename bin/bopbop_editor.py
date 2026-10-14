@@ -113,11 +113,12 @@ def edit_result(answer, request):
 
 
 class EditorBridge:
-    def __init__(self, workspace, submit, cancel, model, resolved=None, control=None):
+    def __init__(self, workspace, submit, cancel, model, resolved=None, control=None, workbench=None):
         self.workspace = Path(workspace).resolve()
         self.submit, self.cancel, self.model = submit, cancel, model
         self.resolved = resolved
         self.control = control
+        self.workbench = workbench
         self.id = uuid.uuid4().hex
         self.root = private_dir()
         self.socket = self.root / (self.id + '.sock')
@@ -155,7 +156,10 @@ class EditorBridge:
         except (ValueError, TypeError, KeyError, OSError, asyncio.TimeoutError) as exc:
             reply = {'error': str(exc) or 'Editor transport timeout'}
         try:
-            writer.write(json.dumps(reply, ensure_ascii=False).encode() + b'\n')
+            encoded = json.dumps(reply, ensure_ascii=False).encode() + b'\n'
+            if len(encoded) > LIMIT:
+                encoded = b'{"error":"Reply exceeds 256 KiB"}\n'
+            writer.write(encoded)
             await writer.drain()
         except (ConnectionError, OSError):
             pass
@@ -170,6 +174,10 @@ class EditorBridge:
             raise ValueError('Wrong BopBop session; reconnect explicitly')
         client = identifier(data.get('client'))
         op = data.get('op')
+        if op == 'workbench':
+            if not self.workbench:
+                raise ValueError('Workbench unavailable; restart BopBop')
+            return self.workbench(data)
         if op == 'hello':
             self.connected = True
             if self.state == 'available':
@@ -193,9 +201,12 @@ class EditorBridge:
                 return record['reply']  # idempotent retry after a lost acknowledgement
             if self.active:
                 raise ValueError('BopBop is busy; selection and prompt retained. Retry when ready')
-            request = validate_request(data.get('request'), self.workspace)
+            value = data.get('request')
+            request = (self.workbench({'action': 'prepare', 'request': value})
+                       if self.workbench and isinstance(value, dict) and value.get('mode') == 'evidence'
+                       else validate_request(value, self.workspace))
             self.submit(request)  # may reject a busy normal chat before recording
-            self.records[request_id] = {'client': client, 'reply': {'status': 'working'}}
+            self.records[request_id] = {'client': client, 'action': request['action'], 'reply': {'status': 'working'}}
             self.active = request_id
             self.state = 'working'
             while len(self.records) > 16:
@@ -228,8 +239,9 @@ class EditorBridge:
                 error = 'Response exceeds 256 KiB; retry with a smaller request'
                 reply = {'status': 'failed', 'error': error}
             self.records[self.active]['reply'] = reply
+            action = self.records[self.active]['action']
             self.active = None
-            self.state = 'retry available' if error else 'awaiting review'
+            self.state = 'retry available' if error else ('answer ready' if action == 'explain' else 'awaiting review')
 
 
 def sessions():

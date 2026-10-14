@@ -40,6 +40,7 @@ from bopbop_inspector import (InspectorStore, Snapshot, request_snapshot, result
                               file_snapshot, attachment_block)
 from bopbop_editor import EditorBridge, nvim_binary
 from bopbop_worker import TurnWorker
+from bopbop_workbench import Workbench
 
 UI_COMMANDS = {
     '/editor': 'Browse workspace files and open one in connected Neovim',
@@ -114,7 +115,11 @@ class TerminalUI:
         self.pending_tools = {}
         self.editor_bridge = None
         self.editor_task = None
-        self.editor_pane = None
+        self.workbench = Workbench(self)
+        self.docs_picking = False
+        self.docs_selected = 0
+        self.docs_query = Buffer(on_text_changed=lambda _: self.docs_changed())
+        self.docs_input = BufferControl(buffer=self.docs_query)
         self.editor_listing_cache = None
         self.editor_preview_cache = None
         self.inspector_search = SearchToolbar()
@@ -137,9 +142,14 @@ class TerminalUI:
         self.bind_keys()
         self.inspector_container = HSplit([
             Window(FormattedTextControl(self.inspector_header), height=1, style='class:menu'),
+            ConditionalContainer(HSplit([
+                Window(self.docs_input, height=1, get_line_prefix=lambda *args: [('class:brand', 'Find tool: ')]),
+                Window(FormattedTextControl(self.docs_choices), height=7),
+                Window(FormattedTextControl('↑↓ choose · Enter documentation · Esc back'), height=1),
+            ]), filter=Condition(lambda: self.docs_picking)),
             self.inspector, self.inspector_search,
             Window(FormattedTextControl(lambda: [('class:muted',
-                ' Ctrl-D/U scroll · hjkl · gg/G · F7 pin · F8 attach')]), height=1),
+                ' e edit file · a ask · F7 pin · F8 attach · F2 choose tool')]), height=1),
         ])
         self.split = VSplit([self.transcript, Window(width=1, char='│', style='class:rule'),
                              HSplit([self.inspector_container], width=self.pane_width)])
@@ -221,7 +231,7 @@ class TerminalUI:
             app.layout.focus(self.inspector)
 
     def body_layout(self):
-        if not self.inspector_visible:
+        if not self.inspector_visible or self.workbench.active:
             return self.transcript
         app = getattr(self, 'app', None)
         return self.split if app is None or app.output.get_size().columns >= 100 else self.inspector_container
@@ -230,6 +240,41 @@ class TerminalUI:
         pin = ' · PINNED' if self.store.pinned else ''
         return [('class:brand', f' {self.inspector_mode.upper()}{pin}  '),
                 ('class:muted', 'F2 docs  F3 result  F4 context  F5 file')]
+
+    def docs_matches(self):
+        query = self.docs_query.text.casefold()
+        return [d for d, _ in tool_entries(self.runtime)
+                if query in (d['name'] + ' ' + d['description']).casefold()]
+
+    def docs_changed(self):
+        self.docs_selected = 0
+
+    def docs_choices(self):
+        entries = self.docs_matches()
+        if not entries:
+            return [('class:muted', 'No matching tools')]
+        self.docs_selected = min(self.docs_selected, len(entries) - 1)
+        start = max(0, self.docs_selected - 6)
+        return [(('class:selected' if i == self.docs_selected else 'class:tool'),
+                 ('› ' if i == self.docs_selected else '  ') + entry['name'] + '\n')
+                for i, entry in enumerate(entries[start:start + 7], start)]
+
+    def choose_docs(self):
+        entries = self.docs_matches()
+        if entries:
+            self.docs_picking = False
+            self.show_docs(entries[self.docs_selected]['name'])
+            self.app.layout.focus(self.inspector)
+
+    def open_docs_picker(self):
+        if self.workbench.active:
+            self.workbench.publish('docs')
+            self.workbench.reveal()
+            return
+        self.inspector_visible = self.docs_picking = True
+        self.inspector_mode = 'docs'
+        self.docs_query.reset()
+        self.app.layout.focus(self.docs_input)
 
     def header(self):
         bridge = (f' · Neovim {self.editor_bridge.state}'
@@ -495,11 +540,11 @@ class TerminalUI:
                 '  Neovim v/V select · <leader>be explain · <leader>br edit\n'
                 '  Default leader: backslash → b → e quickly; then type your question and Enter\n'
                 '  Or Visual :BopbopExplain / :BopbopEdit · Vim supplies the selection range\n'
-                '  Review <leader>ba apply · <leader>bd discard\n'
+                '  Edit review: Enter apply · q discard; answer: q close · leader keys also work\n'
                 '◆ inspector\n'
                 '  F2 Docs · F3 Result · F4 Context · F5 File · F6 focus · F7 pin · F8 attach · F9 pane\n'
-                '  These keys also work in Neovim · F6 returns to chat in tmux; cycles back after readers\n'
-                '  F8 attaches inspector body lines; Neovim selections use explain/edit\n'
+                '  Neovim: F2 filter tools · F6 chat/workbench · F9 hide/reopen with buffers retained\n'
+                '  F8 attaches source selection or V-selected evidence · e edits a file preview\n'
                 '  Drag in a reader to select and copy · y copies a selection or current line\n'
                 '  Alt-Left/Right snapshots · Alt-−/+ resize · Ctrl-Space select body lines\n')
             return
@@ -521,6 +566,7 @@ class TerminalUI:
     def show_docs(self, name, reveal=True):
         lines = reference_lines(self.runtime, name, self.engine.Display(False), width=76)
         self.doc_name = name
+        self.docs_picking = False
         self.select_snapshot(Snapshot('docs', name, '\n'.join(lines),
                                       {'scope': 'Tool-owned documentation; viewing does not execute'}), reveal)
 
@@ -531,7 +577,9 @@ class TerminalUI:
             self.inspector_id = key
             self.inspector_mode = item.kind
             self.inspector_visible |= reveal
-            self.render_inspector()
+            self.render_inspector(force=reveal)
+            if reveal and self.workbench.active:
+                self.workbench.reveal(focus=False)
         else:
             self.notice = self.store.notice
 
@@ -542,7 +590,7 @@ class TerminalUI:
             self.render_inspector()
         return key
 
-    def render_inspector(self):
+    def render_inspector(self, force=False):
         item = self.store.items.get(self.inspector_id)
         if not item:
             text = f'No {self.inspector_mode} snapshot yet.\n'
@@ -580,8 +628,11 @@ class TerminalUI:
         if self.store.notice:
             text += '\n\n' + self.store.notice
         self.inspector.buffer.set_document(Document(text, 0), bypass_readonly=True)
+        if self.workbench.active and (force or self.workbench.view.get('kind') == 'snapshot'):
+            self.workbench.snapshot()
 
     def switch_view(self, kind):
+        self.docs_picking = False
         self.inspector_visible = True
         self.inspector_mode = kind
         self.store.pinned = None
@@ -592,7 +643,7 @@ class TerminalUI:
             if entries:
                 self.show_docs(entries[0][0]['name'])
                 return
-        self.render_inspector()
+        self.render_inspector(force=True)
 
     def cycle_snapshot(self, delta):
         records = self.store.records(self.inspector_mode)
@@ -613,10 +664,14 @@ class TerminalUI:
         if not item:
             raise ValueError('Open a snapshot first')
         attachment = item.attachment(start, end)
+        self.add_attachment(attachment)
+
+    def add_attachment(self, attachment):
         if len(self.attachments) >= 8 or sum(x['bytes'] for x in self.attachments) + attachment['bytes'] > 32000:
             raise ValueError('Pending attachments exceed 8 selections / 32 KB; /detach to clear')
         self.attachments.append(attachment)
-        self.notice = f'Attached {item.title} lines {start}–{end} · {attachment["bytes"]} bytes'
+        start, end = attachment['lines']
+        self.notice = f'Attached {attachment["source"]} lines {start}–{end} · {attachment["bytes"]} bytes'
         self.append(f'[{self.notice}; next question only]\n')
 
     async def load_file(self, path, diff):
@@ -659,6 +714,10 @@ class TerminalUI:
         return True
 
     def toggle_pane(self):
+        if self.workbench.toggle():
+            self.inspector_visible = False
+            self.app.layout.focus(self.input_control)
+            return
         self.inspector_visible = not self.inspector_visible
         self.app.layout.focus(self.input_control)
 
@@ -671,6 +730,10 @@ class TerminalUI:
         path = (self.args.workspace / (parts[0] if parts else '.')).resolve()
         if not path.is_relative_to(self.args.workspace):
             raise ValueError('File must be inside this session workspace')
+        self.workbench.publish('open', path=str(path))
+        if self.workbench.reveal():
+            self.inspector_visible = False
+            return
         nvim = nvim_binary()  # fail visibly before suspending the terminal
         command = [sys.executable, str(pathlib.Path(__file__).with_name('bopbop_editor.py')), '--connect',
                    self.editor_bridge.id, str(path)]
@@ -681,11 +744,13 @@ class TerminalUI:
                     split += ['-t', os.environ['TMUX_PANE']]
                 pane_command = ['env', f'PATH={os.environ.get("PATH", "")}',
                                 f'BOPBOP_EDITOR_DIR={self.editor_bridge.root}',
+                                'BOPBOP_WORKBENCH=1',
                                 f'BOPBOP_NVIM_BIN={nvim}', *command]
                 result = subprocess.run([*split, shlex.join(pane_command)],
                                         capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
-                    self.editor_pane = result.stdout.strip()
+                    self.workbench.pane = result.stdout.strip()
+                    self.inspector_visible = False
                     self.notice = 'Neovim opened in tmux · select v/V → explain/edit'
                     return
                 self.append(f'tmux split failed: {safe_text(result.stderr.strip())}\n')
@@ -698,7 +763,8 @@ class TerminalUI:
 
     async def launch_editor(self, command):
         try:
-            result = await run_in_terminal(lambda: subprocess.run(command, cwd=self.args.workspace),
+            result = await run_in_terminal(lambda: subprocess.run(command, cwd=self.args.workspace,
+                                           env={**os.environ, 'BOPBOP_WORKBENCH': '1'}),
                                            in_executor=True)
             self.notice = ('Back from Neovim' if result.returncode == 0
                            else f'Neovim exited with status {result.returncode}')
@@ -709,12 +775,25 @@ class TerminalUI:
             self.append(self.notice + '\n')
         finally:
             self.editor_task = None
+            self.workbench.connected = False
 
     def shortcut(self, key, from_editor=False):
         """The same inspector controls for the chat terminal and connected editor."""
         views = {'f2': 'docs', 'f3': 'result', 'f4': 'context', 'f5': 'file'}
         try:
-            if key in views:
+            if self.workbench.pane:
+                self.workbench.alive()
+            if key == 'f2':
+                self.open_docs_picker()
+            elif key in views and self.workbench.active:
+                if key == 'f5':
+                    self.workbench.publish('source')
+                elif key == 'f3' and self.editor_bridge.state in {'awaiting review', 'answer ready'}:
+                    self.workbench.publish('review')
+                else:
+                    self.switch_view(views[key])
+                self.workbench.reveal(focus=not from_editor)
+            elif key in views:
                 self.switch_view(views[key])
             elif key == 'f6':
                 if from_editor:
@@ -723,19 +802,20 @@ class TerminalUI:
                     subprocess.run(['tmux', 'select-pane', '-t', os.environ['TMUX_PANE']],
                                    check=True, capture_output=True, timeout=2)
                     self.app.layout.focus(self.input_control)
+                elif self.workbench.reveal():
+                    self.inspector_visible = False
                 elif self.app.layout.has_focus(self.input_control):
                     self.app.layout.focus(self.inspector if self.inspector_visible else self.transcript)
                 elif self.app.layout.has_focus(self.inspector) and self.app.output.get_size().columns >= 100:
                     self.app.layout.focus(self.transcript)
                 else:
                     self.app.layout.focus(self.input_control)
-                    if self.editor_pane:
-                        result = subprocess.run(['tmux', 'select-pane', '-t', self.editor_pane],
-                                                capture_output=True, timeout=2)
-                        if result.returncode:
-                            self.editor_pane = None  # editor was closed; keep chat usable
             elif key == 'f7':
+                if self.workbench.active and self.workbench.view['kind'] != 'snapshot':
+                    raise ValueError('Open Docs, Result or Context before pinning evidence')
                 self.pin()
+                if self.workbench.active:
+                    self.workbench.snapshot()
             elif key == 'f8':
                 doc = self.inspector.buffer.document
                 start, end = doc.selection_range() if doc.selection else (doc.cursor_position, doc.cursor_position)
@@ -753,8 +833,9 @@ class TerminalUI:
     def submit_editor(self, request):
         if self.worker:
             raise ValueError('BopBop is busy; selection and prompt retained. Retry when ready')
-        self.record_snapshot(Snapshot('file', 'Neovim selection · ' + request['path'],
-                                      request['text'], {k: v for k, v in request.items() if k != 'text'}))
+        if request.get('mode') != 'evidence':
+            self.record_snapshot(Snapshot('file', 'Neovim selection · ' + request['path'],
+                                          request['text'], {k: v for k, v in request.items() if k != 'text'}))
         self.append(f'\n› Neovim {request["action"]}: {request["prompt"]}\n'
                     f'{request["path"]} · {len(request["text"].encode())} B · shared session · no tools\n')
         self.start_worker('', editor=request)
@@ -769,7 +850,7 @@ class TerminalUI:
             self.editor_bridge.complete(event.get('result'), event.get('error'))
             result = event.get('result')
             if result:
-                self.record_snapshot(Snapshot('result', 'Neovim · awaiting review',
+                self.record_snapshot(Snapshot('result', 'Neovim · ' + self.editor_bridge.state,
                     result.get('diff', result.get('answer', '')), {'editor': True}))
                 self.append('\nNeovim response ready · review in editor; nothing applied.\n')
         elif event['kind'] == 'output':
@@ -839,7 +920,7 @@ class TerminalUI:
                 lambda request_id, outcome: self.append(
                     f'\nNeovim review {request_id[:8]}: {outcome}'
                     + (' to unsaved buffer.\n' if outcome == 'applied' else '.\n')),
-                control=lambda key: self.shortcut(key, from_editor=True))
+                control=lambda key: self.shortcut(key, from_editor=True), workbench=self.workbench.request)
             await self.editor_bridge.start()
         except (ValueError, OSError) as exc:
             if self.editor_bridge:
@@ -856,8 +937,32 @@ class TerminalUI:
 
     def bind_keys(self):
         editing = Condition(lambda: self.app.layout.has_focus(self.input_control))
+        picking = Condition(lambda: self.app.layout.has_focus(self.docs_input))
         reading = Condition(lambda: self.app.layout.has_focus(self.inspector)
                             or self.app.layout.has_focus(self.transcript))
+        @self.keys.add('up', filter=picking)
+        @self.keys.add('down', filter=picking)
+        def docs_arrow(event):
+            count = len(self.docs_matches())
+            if count:
+                self.docs_selected = (self.docs_selected + (-1 if event.key_sequence[0].key == 'up' else 1)) % count
+        @self.keys.add('enter', filter=picking)
+        def docs_enter(event): self.choose_docs()
+        @self.keys.add('e', filter=reading)
+        def edit_file(event):
+            item = self.store.items.get(self.inspector_id)
+            if self.app.layout.has_focus(self.inspector) and item and item.kind == 'file' and item.metadata.get('path'):
+                try: self.open_editor(item.metadata['path'])
+                except (ValueError, OSError, subprocess.SubprocessError) as exc: self.notice = str(exc)
+            else:
+                self.notice = 'Open a file snapshot to edit its source'
+        @self.keys.add('a', filter=reading)
+        def ask_selection(event):
+            before = len(self.attachments)
+            self.shortcut('f8')
+            if len(self.attachments) > before:
+                self.app.layout.focus(self.input_control)
+                self.notice = 'Selection attached · type your question'
         def scroll_reader(event, handler):
             window = event.app.layout.current_window
             before = event.current_buffer.document.cursor_position_row
@@ -924,6 +1029,10 @@ class TerminalUI:
                 event.current_buffer.cursor_left()
         @self.keys.add('escape')
         def escape(event):
+            if self.docs_picking:
+                self.docs_picking = False
+                self.app.layout.focus(self.inspector)
+                return
             self.hidden = True
             self.app.layout.focus(self.input_control)
         @self.keys.add('f1', filter=editing)

@@ -3,10 +3,12 @@ local M = { state = 'disconnected', pending = nil, review = nil }
 local uv, api = vim.uv, vim.api
 local defaults = { explain = '<leader>be', edit = '<leader>br', apply = '<leader>ba',
   discard = '<leader>bd', cancel = '<leader>bc', retry = '<leader>bt',
+  accept = '<CR>', close = 'q',
   docs = '<F2>', result = '<F3>', context = '<F4>', file = '<F5>',
   focus = '<F6>', pin = '<F7>', attach = '<F8>', pane = '<F9>' }
 local commands = { explain = 'BopbopExplain', edit = 'BopbopEdit', apply = 'BopbopApply',
   discard = 'BopbopDiscard', cancel = 'BopbopCancel', retry = 'BopbopRetry',
+  accept = 'BopbopApply', close = 'BopbopDiscard',
   docs = 'BopbopDocs', result = 'BopbopResult', context = 'BopbopContext', file = 'BopbopFile',
   focus = 'BopbopFocus', pin = 'BopbopPin', attach = 'BopbopAttach', pane = 'BopbopPane' }
 local function id() return vim.fn.sha256(tostring(uv.hrtime()) .. tostring(math.random())):sub(1, 32) end
@@ -27,18 +29,22 @@ local function key_hint(name, mode, buffer)
   if key and key ~= false then
     local found = vim.fn.maparg(expand_key(key), mode, false, true)
     if found.desc == 'BopBop ' .. name and (not buffer or found.buffer == 1) then
-      return expand_key(key):gsub('<(F%d+)>', '%1') .. ' ' .. name
+      local label = name == 'accept' and 'apply'
+        or name == 'close' and M.pending and M.pending.action == 'edit' and 'discard' or name
+      return expand_key(key):gsub('<(F%d+)>', '%1') .. ' ' .. label
     end
   end
   return ':' .. commands[name]
 end
 function M.hint()
-  local parts = { '● bopbop · ' .. M.state }
+  local state = M.state == 'awaiting review' and M.pending and M.pending.action == 'explain'
+    and 'answer ready' or M.state
+  local parts = { '● bopbop · ' .. state }
   local width = api.nvim_win_get_width(0)
   local mode = vim.fn.mode()
   if M.review and api.nvim_get_current_buf() == M.review then
-    if M.pending and M.pending.action == 'edit' then table.insert(parts, key_hint('apply', 'n', true)) end
-    table.insert(parts, key_hint('discard', 'n', true))
+    if M.pending and M.pending.action == 'edit' then table.insert(parts, key_hint('accept', 'n', true)) end
+    table.insert(parts, key_hint('close', 'n', true))
   elseif mode == 'v' or mode == 'V' or mode == '\22' then
     table.insert(parts, key_hint('explain', 'x'))
     table.insert(parts, mode == '\22' and 'v/V for edit' or key_hint('edit', 'x'))
@@ -95,6 +101,7 @@ local function rpc(data, callback)
 end
 
 function M.capture(whole)
+  if M.workbench and not whole and vim.b.bopbop_snapshot then return M.workbench.selection() end
   local buf = api.nvim_get_current_buf()
   if vim.bo[buf].buftype ~= '' then error('Select code in a normal file buffer') end
   local name = api.nvim_buf_get_name(buf)
@@ -145,6 +152,8 @@ local function map(name, mode, callback, buffer)
   end
 end
 function M.close_review()
+  if M.workbench and api.nvim_get_current_buf() == M.review and M.pending
+    and api.nvim_buf_is_valid(M.pending.buf) then M.workbench.restore(M.pending.buf) end
   if M.review and api.nvim_buf_is_valid(M.review) then api.nvim_buf_delete(M.review, { force = true }) end
   M.review = nil
 end
@@ -153,7 +162,7 @@ function M.discard()
   local p = M.pending
   rpc({ op = 'resolve', id = p.id, outcome = 'discarded' }, function() end)
   M.close_review(); M.pending = nil; M.state = 'connected'
-  notify('Discarded · source buffer unchanged')
+  notify(p.action == 'explain' and 'Answer closed' or 'Discarded · source buffer unchanged')
 end
 function M.apply()
   local p = M.pending
@@ -188,7 +197,9 @@ end
 local function review(p, result)
   p.result = result
   M.state = 'awaiting review'
-  if vim.o.columns < 120 then
+  if M.workbench then
+    -- The workbench replaces its view; live source buffers remain loaded underneath.
+  elseif vim.o.columns < 120 then
     vim.cmd('botright split')
     vim.cmd('resize ' .. math.max(8, math.floor(vim.o.lines * .55)))
   else
@@ -196,15 +207,16 @@ local function review(p, result)
   end
   local buf = api.nvim_create_buf(false, true)
   M.review = buf
-  api.nvim_win_set_buf(0, buf)
+  if M.workbench then M.workbench.review(buf) else api.nvim_win_set_buf(0, buf) end
   vim.wo.wrap = true
   vim.wo.linebreak = true
   vim.wo.number = false
   vim.wo.relativenumber = false
-  vim.wo.statusline = ' BopBop review · %l/%L · read only'
+  vim.wo.statusline = p.action == 'edit' and ' Proposed edit · %l/%L · Enter apply · q discard'
+    or ' Answer · %l/%L · q close'
   api.nvim_buf_set_name(buf, 'bopbop://' .. p.id .. '/' .. p.action)
-  vim.bo[buf].bufhidden = 'wipe'
-  local header = { 'BopBop · ' .. p.action .. ' · NOT APPLIED',
+  vim.bo[buf].bufhidden = M.workbench and 'hide' or 'wipe'
+  local header = { p.action == 'edit' and 'BopBop · edit · NOT APPLIED' or 'BopBop · answer · q close',
     p.path .. ' · ' .. p.mode .. ' · ' .. #p.text .. ' bytes',
     'Prompt: ' .. p.prompt, '' }
   local body = result.diff and ((result.summary or '') .. '\n\n' .. result.diff) or result.answer or ''
@@ -212,8 +224,13 @@ local function review(p, result)
   api.nvim_buf_set_lines(buf, 0, -1, true, header)
   vim.bo[buf].filetype = p.action == 'edit' and 'diff' or 'markdown'
   vim.bo[buf].modifiable = false
-  if p.action == 'edit' then map('apply', 'n', M.apply, buf) end
+  if p.action == 'edit' then
+    map('apply', 'n', M.apply, buf); map('accept', 'n', M.apply, buf)
+  end
   map('discard', 'n', M.discard, buf)
+  map('close', 'n', M.discard, buf)
+  vim.wo.statusline = ' ' .. (p.action == 'edit' and 'Proposed edit · ' .. key_hint('accept', 'n', true) or 'Answer')
+    .. ' · ' .. key_hint('close', 'n', true) .. ' · %l/%L'
   notify('Response ready · ' .. (p.action == 'edit' and key_hint('apply', 'n', true) .. ' · ' or '')
     .. key_hint('discard', 'n', true))
 end
@@ -240,7 +257,7 @@ function M.retry()
   p.id = p.id or id()
   M.state = 'working'
   local request = {}
-  for _, key in ipairs({ 'path', 'changedtick', 'language', 'mode', 'text', 'range', 'spans', 'action', 'prompt' }) do
+  for _, key in ipairs({ 'path', 'changedtick', 'language', 'mode', 'text', 'range', 'spans', 'action', 'prompt', 'snapshot' }) do
     request[key] = p[key]
   end
   rpc({ op = 'submit', id = p.id, request = request }, function(reply) handle_reply(p, reply) end)
@@ -249,6 +266,7 @@ function M.request(action, whole, prompt)
   if M.pending then notify('A request is retained · retry it, or :BopbopForget before selecting again'); return end
   local ok, p = pcall(M.capture, whole)
   if not ok then notify(p, vim.log.levels.WARN); return end
+  if action == 'edit' and p.mode == 'evidence' then notify('Press e to open the source file before editing'); return end
   if action == 'edit' and p.mode == 'block' then notify('Blockwise edits: use v or V', vim.log.levels.WARN); return end
   if action == 'edit' then
     local exact, value = pcall(source_text, p)
@@ -295,6 +313,7 @@ function M.connect(session)
     if reply.error then fail(reply.error) else
       M.state = M.pending and 'retry available' or 'connected'
       notify('Connected · ' .. reply.model)
+      if M.workbench then M.workbench.start(M, rpc, notify) end
     end
   end)
 end
@@ -303,6 +322,7 @@ function M.setup(opts)
   if vim.fn.has('nvim-0.11') ~= 1 then error('BopBop needs Neovim 0.11 or later') end
   M.initialized = true
   opts = opts or {}
+  if vim.env.BOPBOP_WORKBENCH == '1' then M.workbench = require('bopbop.workbench') end
   M.keys = vim.tbl_extend('force', defaults, opts.keys or {})
   M.client = id()
   local function command(name, callback, options)
@@ -332,6 +352,7 @@ function M.setup(opts)
   map('cancel', 'n', M.cancel); map('retry', 'n', M.retry)
   for n, name in ipairs({ 'docs', 'result', 'context', 'file', 'focus', 'pin', 'attach', 'pane' }) do
     local function control()
+      if name == 'attach' and M.workbench then M.workbench.attach(); return end
       rpc({ op = 'control', key = 'f' .. (n + 1) }, function(reply)
         if reply.error then notify(reply.error, vim.log.levels.WARN) end
       end)

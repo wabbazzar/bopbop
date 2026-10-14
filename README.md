@@ -216,8 +216,8 @@ input stays fixed and F9 returns to the conversation.
 
 | Control | Action |
 |---|---|
-| F2 / F3 / F4 / F5 | Tool docs / returned result / exact model request / file or diff |
-| F6 | Cycle input, inspector and conversation focus, then the connected tmux editor |
+| F2 / F3 / F4 / F5 | Tool picker / result or review / exact model request / source file |
+| F6 | Switch chat/workbench when editing; otherwise cycle input and readers |
 | F7 | Pin/unpin the current snapshot; new events do not replace a pinned view |
 | Alt-Left / Alt-Right | Previous/next retained snapshot in this view |
 | Alt-`-` / Alt-`+` | Narrow/widen the inspector |
@@ -288,18 +288,21 @@ place. A complete path still opens directly, including names with spaces.
 `/help` shows these controls and the Neovim review keys.
 
 Select with **v/V**, then **`<leader>be`** to explain or **`<leader>br`** to
-request an edit. Enter a prompt; the response opens a review split. In the
-review, **`<leader>ba`** applies and **`<leader>bd`** discards. **u** undoes;
+request an edit. Enter a prompt; the response opens in the same workbench.
+For edits, **Enter** applies and **q** discards; for answers, **q** closes.
+**`<leader>ba`** and **`<leader>bd`** remain available. **u** undoes;
 files are never silently saved. The winbar shows the available keys and state.
 **`<leader>bc`** cancels; **`<leader>bt`** retries a retained request.
 The default leader is backslash: press **backslash → b → e** quickly while
 selected, then enter your question. Alternatively, press **:** while selected,
 type **BopbopExplain** and press **Enter**; Vim supplies the selection range.
 
-**F2–F9 also work inside Neovim** (Normal, Visual and Insert modes). They control
-BopBop's inspector; **F6** returns to chat input in tmux and **F9** toggles the
-inspector. BopBop's F6 cycle returns to the editor after its readers. **F8**
-attaches the inspector's selection, while `\be` / `\br` use Neovim's selection.
+**F2–F9 also work inside Neovim** (Normal, Visual and Insert modes).
+Docs, Result, Context, File and Review share one window. **F2** opens a tool
+picker: type to filter names/descriptions, use arrows, then Enter for its docs.
+**F6** switches chat/workbench; **F9** hides/reopens it without losing dirty
+buffers. **F8** attaches the current source selection or **V**-selected evidence
+body lines. In a file preview, **e** edits the source at the current line.
 Existing Neovim mappings are preserved. Restart the terminal and editor after
 upgrading to load new bindings.
 

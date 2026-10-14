@@ -524,38 +524,35 @@ def test_terminal_keys_selection_prompt_and_inspector(tmp_path, installed, edito
         term.wait('shared session / no tools:', pane='1')
         start = time.monotonic()
         term.send('Explain this function in one short sentence.', pane='1'); term.key('Enter', pane='1')
-        screen = term.wait('BopBop · explain · NOT APPLIED', pane='1', timeout=120)
+        screen = term.wait('BopBop · answer · q close', pane='1', timeout=120)
         timings['explain_seconds'] = time.monotonic() - start
         assert 'Prompt: Explain this function' in screen
         term.wait('Finished in')
         (tmp_path / 'explanation-screen.txt').write_text(screen)
-        term.send('\\bd', pane='1')
-        term.wait('connected', pane='1', absent='NOT APPLIED')
-        # These keys are pressed in Neovim, not injected into the BopBop pane.
-        term.key('F9', pane='1'); term.wait('DOCS')
-        term.key('F9', pane='1'); term.wait('bopbop>', absent='DOCS')
-        for key, title, evidence in [('F2', 'DOCS', 'list_files'),
-                                    ('F3', 'RESULT', 'Neovim'),
-                                    ('F4', 'CONTEXT', 'Explain this function'),
-                                    ('F5', 'FILE', 'def increment(x):')]:
-            term.key(key, pane='1'); term.wait(title); term.wait(evidence)
-            if key == 'F3':
-                term.wait('Model response', absent='Incomplete / failed')
-        term.key('F7', pane='1'); term.wait('PINNED')
-        term.key('F7', pane='1'); term.wait('FILE', absent='PINNED')
+        term.send('q', pane='1')
+        term.wait('connected', pane='1', absent='BopBop · answer')
+        # All views occupy the same Neovim window; F2 opens a real tool picker.
+        term.key('F2', pane='1'); term.wait('type to filter', pane='1')
+        term.send('read_file', pane='1'); term.key('Enter', pane='1')
+        term.wait('DOCS', pane='1'); term.wait('Parameters', pane='1')
+        assert 'DOCS' not in term.text('0')
+        for key, title, evidence in [('F3', 'RESULT', 'Model response'),
+                                    ('F4', 'CONTEXT', 'Explain this function')]:
+            term.key(key, pane='1'); term.wait(title, pane='1'); term.wait(evidence, pane='1')
+        term.key('F7', pane='1'); term.wait('PINNED', pane='1')
+        term.key('F7', pane='1'); term.wait('CONTEXT', pane='1', absent='PINNED')
+        term.key('F5', pane='1'); term.wait('File ·', pane='1')
+        term.send('ggVj', pane='1'); term.key('F8', pane='1'); term.wait('Attached')
+        term.key('Escape', pane='1')
+        term.key('F9', pane='1'); term.wait_active('0')
+        term.key('F9'); term.wait_active('1'); term.wait('def increment', pane='1')
         term.key('F6', pane='1'); term.wait_active('0')
-        term.key('F6'); term.wait('Inspector focused')
-        term.send('jjjjj')  # first numbered evidence line, below the inspector header
-        term.key('F8', pane='1'); term.wait('Attached')
-        if columns >= 200:
-            term.key('F6'); term.wait('Conversation focused')
         term.key('F6')
         term.wait_active('1')
         # Changing focus and inspector views must preserve the native Visual selection.
         term.send('ggVj', pane='1')
         term.key('F6', pane='1'); term.wait_active('0')
-        for _ in range(3 if columns >= 200 else 2):
-            term.key('F6')
+        term.key('F6'); term.wait_active('1')
         term.wait('-- VISUAL LINE --', pane='1')
         term.send('\\br', pane='1'); term.wait('shared session / no tools:', pane='1')
         start = time.monotonic()
@@ -566,7 +563,7 @@ def test_terminal_keys_selection_prompt_and_inspector(tmp_path, installed, edito
         timings['edit_seconds'] = time.monotonic() - start
         (tmp_path / 'edit-screen.txt').write_text(screen)
         assert source.read_text() == original
-        term.send('\\ba', pane='1'); term.wait('Applied to unsaved buffer', pane='1')
+        term.key('Enter', pane='1'); term.wait('Applied to unsaved buffer', pane='1')
         # Export for verification with an explicit Vim write to a different temporary file.
         term.send(':w! accepted.py', pane='1'); term.key('Enter', pane='1')
         term.wait('written', pane='1')
@@ -605,14 +602,14 @@ def test_terminal_visual_command_cancel_retry_insert_keys_and_closed_editor(tmp_
         term.send(":lua vim.fn.writefile({tostring(vim.fn.line('.'))}, 'cursor.txt')", pane='1')
         term.key('Enter', pane='1')
         deadline = time.monotonic() + 3
-        while not (tmp_path / 'cursor.txt').exists() and time.monotonic() < deadline:
+        while (not (tmp_path / 'cursor.txt').exists() or not (tmp_path / 'cursor.txt').stat().st_size) and time.monotonic() < deadline:
             time.sleep(.05)
         assert int((tmp_path / 'cursor.txt').read_text()) > 1
         # Insert-mode F9 controls the inspector without inserting escape codes or leaving Insert mode.
         term.send('ggi', pane='1'); term.wait('-- INSERT --', pane='1')
-        term.key('F9', pane='1'); term.wait('DOCS')
+        term.key('F9', pane='1'); term.wait_active('0')
+        term.key('F9'); term.wait_active('1')
         term.wait('-- INSERT --', pane='1')
-        term.key('F9', pane='1'); term.wait('bopbop>', absent='DOCS')
         term.key('Escape', pane='1')
         # Vim's ranged command is a usable alternative to the leader sequence.
         term.send('ggV:BopbopExplain', pane='1'); term.key('Enter', pane='1')
@@ -633,15 +630,17 @@ def test_terminal_visual_command_cancel_retry_insert_keys_and_closed_editor(tmp_
             time.sleep(.05)
         assert len(received) == 1
         term.send('\\bc', pane='1'); term.wait('retry available', pane='1')
-        term.send('\\bt', pane='1'); term.wait('NOT APPLIED', pane='1')
+        term.send('\\bt', pane='1'); term.wait('BopBop · answer', pane='1')
         assert len(received) == 2
         assert all('private row 99' not in json.dumps(payload) for payload in received)
-        term.send('\\bd', pane='1'); term.wait('connected', pane='1', absent='NOT APPLIED')
+        term.send('\\bd', pane='1'); term.wait('connected', pane='1', absent='BopBop · answer')
         term.send(':qa!', pane='1'); term.key('Enter', pane='1')
         term.wait_active('0')
         # A closed tmux editor must not leave F6 pointing at a dead pane.
         term.key('F6'); term.wait('Conversation focused')
-        term.key('F6'); term.send('/help'); term.key('Enter'); term.wait('commands')
+        term.key('F6'); term.key('F2'); term.wait('choose tool')
+        term.send('sample_count'); term.key('Enter'); term.wait('Observation window')
+        term.key('Escape'); term.send('/help'); term.key('Enter'); term.wait('commands')
         assert source.read_text() == original
     finally:
         term.close()

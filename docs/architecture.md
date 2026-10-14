@@ -72,3 +72,8 @@ workflows and their protection rules stay in the owning workspace.
 The file browser, inspector, and key bindings still live together in the
 managed terminal. Extract them when a change gives them independent state or
 behavior that needs an owner, rather than splitting by line count alone.
+
+The workbench controller (`bin/bopbop_workbench.py`) owns pane lifecycle and
+revisioned, bounded snapshot transport. Neovim's `workbench.lua` owns buffer
+navigation, tool selection and view restoration. The existing inspector owns
+rendering and retained evidence; neither view transport nor browsing calls a model.

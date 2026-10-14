@@ -84,6 +84,7 @@ class TmuxTerminal:
         home.mkdir(exist_ok=True)
         (home / 'env').write_text('PATH=/usr/bin:/bin\n')
         self.env.update(TERM='xterm-256color', BOPBOP_EDITOR_DIR=self.directory.name,
+                        XDG_STATE_HOME=self.directory.name + '/state',
                         BOPBOP_HOME=str(home), BOPBOP_OLLAMA_HOST='http://127.0.0.1:1')
         self.env.update(extra_env or {})
         command = shlex.join(['env', f'PATH={self.env["PATH"]}', str(ROOT / 'bin/bopbop'),
@@ -230,7 +231,7 @@ def test_editor_file_reader_browses_filters_previews_and_opens_without_moving_in
         terminal.wait('Back from Neovim', absent='No matches')
         terminal.send('\x15/help\r')
         terminal.wait('◆ editor browser')
-        terminal.wait('<leader>ba apply')
+        terminal.wait('Edit review: Enter apply')
         terminal.wait('Drag in a reader')
         terminal.send('/exit\r'); terminal.process.wait(timeout=5)
         assert terminal.process.returncode == 0
@@ -387,18 +388,32 @@ def test_same_terminal_editor_controls_and_return(installed, tmp_path):
             terminal.wait('bopbop>'); terminal.send('/editor example.py\r')
             terminal.wait('● bopbop · connected')
             terminal.send('i'); terminal.wait('-- INSERT --')
-            terminal.send(b'\x1b[20~')  # F9: update the suspended TUI's inspector
             terminal.send(b'\x1b[17~')  # F6: explain how to return from a shared terminal
             terminal.send('\x1b:messages\r')
             terminal.wait(':q to return')
-            terminal.send('\r:q\r'); terminal.wait('DOCS')
+            terminal.send('\r:q\r')
             terminal.wait('Back from Neovim')
-            terminal.send(b'\x1b[20~'); terminal.wait('bopbop>', absent='DOCS')
             terminal.send('/exit\r'); terminal.process.wait(timeout=5)
             assert terminal.process.returncode == 0
             assert (tmp_path / 'example.py').read_text() == 'print(42)\n'
         finally:
             terminal.close()
+
+
+def test_docs_picker_filters_and_opens_declaration_without_running_tool(installed, tmp_path):
+    terminal = ManagedTerminal(installed, tmp_path, columns=140)
+    try:
+        terminal.wait('bopbop>'); terminal.send(b'\x1bOQ')
+        terminal.wait('Find tool:')
+        terminal.send('sample_count'); terminal.wait('› sample_count')
+        terminal.send('\r'); terminal.wait('Observation window')
+        terminal.wait('Inspector focused')
+        assert not (installed / 'called').exists()
+        terminal.send(b'\x1bOQ'); terminal.wait('Find tool:')
+        terminal.send('no_such_tool'); terminal.wait('No matching tools')
+        terminal.send('\x1b'); terminal.wait('DOCS', absent='Find tool:')
+    finally:
+        terminal.close()
 
 
 def test_managed_tool_worker_keeps_draft_and_history_live(installed, tmp_path):
