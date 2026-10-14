@@ -18,6 +18,9 @@ def test_jsonl_transport_resumes_history(tmp_path):
             size = int(self.headers["Content-Length"])
             payload = json.loads(self.rfile.read(size))
             requests.append(payload)
+            if payload['messages'][-1]['content'] == 'fail':
+                self.send_error(500, 'fixture model failure')
+                return
             body = json.dumps({"message": {"content": f"reply {len(requests)}"},
                                "done": True, "prompt_eval_count": 7,
                                "eval_count": 2, "eval_duration": 1000000000}).encode() + b"\n"
@@ -50,6 +53,14 @@ def test_jsonl_transport_resumes_history(tmp_path):
         assert json.loads(second.stdout.splitlines()[0])["session_id"] == sid
         assert [message["content"] for message in requests[1]["messages"]
                 if message["role"] in {"user", "assistant"}] == ["hello", "reply 1", "again"]
+        failed = subprocess.run([sys.executable, str(script), '--jsonl', '--workspace',
+                                 str(tmp_path), 'fail'], env=env, capture_output=True,
+                                text=True, check=True)
+        events = [json.loads(line) for line in failed.stdout.splitlines()]
+        assert [event['kind'] for event in events] == ['session', 'error']
+        assert 'HTTP Error 500' in events[-1]['message']
+        assert not failed.stderr and 'Traceback' not in failed.stdout
+        assert not (tmp_path / 'data/ollama_sessions' / (events[0]['session_id'] + '.json')).exists()
     finally:
         server.shutdown()
         server.server_close()

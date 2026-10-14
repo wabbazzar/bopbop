@@ -76,6 +76,16 @@ test('tool failure and an unfinished stream are visible; input remains usable', 
   await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled();
 });
 
+test('quiet work shows server heartbeats without claiming visible model text', async ({ page }) => {
+  await open(page); await token(page); await send(page, 'quiet work');
+  await expect(page.getByTestId('answer')).toHaveText('Quiet work finished.');
+  await page.getByText('Agent trace', { exact: true }).click();
+  await expect(page.getByTestId('trace')).toContainText('Last server heartbeat');
+  await expect(page.getByTestId('trace')).toContainText('10.00s');
+  await page.reload();
+  await expect(page.getByTestId('trace')).toContainText('Last server heartbeat');
+});
+
 test('model Markdown cannot execute scripts, load images, or link javascript', async ({ page }) => {
   await open(page); await token(page); await send(page, 'unsafe markdown');
   const answer = page.getByTestId('answer');

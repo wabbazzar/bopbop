@@ -39,6 +39,13 @@ with tempfile.TemporaryDirectory(prefix='bopbop-pwa-test-') as data_dir:
 
     async def fake_turn(prompt, resume_session_id=None):
         yield {'kind': 'session', 'session_id': resume_session_id or 'fixture-agent-session'}
+        if 'quiet work' in prompt:
+            yield {'kind': 'progress', 'elapsed_ms': 5000}
+            await asyncio.sleep(.15)
+            yield {'kind': 'progress', 'elapsed_ms': 10000}
+            yield {'kind': 'text', 'delta': 'Quiet work finished.'}
+            yield {'kind': 'done', 'duration_ms': 10000}
+            return
         await asyncio.sleep(1 if 'slow reply' in prompt else .04)
         if 'interrupt stream' in prompt:
             yield {'kind': 'text', 'delta': 'Partial reply'}

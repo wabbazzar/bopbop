@@ -104,7 +104,12 @@ bopbop local "summarize this repo"      # one turn
 The default model is `gpt-oss:20b` with a 16,384-token request context. Use
 `--model NAME` or `--context N` to change those at launch. The agent loads
 top-level `AGENTS.md`, `CLAUDE.md`, and `personality.md` from its workspace at
-startup. Terminal conversations live in the process; Signal/API conversations
+startup. For a workspace with large wrapper instructions, create a concise
+`BOPBOP.md`: the local agent loads that file instead. Keep required rules there
+and point to longer documents to read when needed. Workspace skills under
+`.agents/skills/` (or `.claude/skills/`) are listed by path; the agent reads the
+requested `SKILL.md` with `read_file` before using it. Pack profiles continue
+to use their own instructions and tools. Terminal conversations live in the process; Signal/API conversations
 persist under `BOPBOP_DATA_DIR/ollama_sessions/` and resume through the same
 server session routing as the wrapper harnesses.
 
@@ -310,6 +315,13 @@ the CLI and requires no additional packages.
 
 `read_file` and `write_file` stay within the selected workspace, while
 `run_command` executes with your user permissions and has no approval step.
+Its default timeout is 30 seconds. Long workflows can set `timeout_seconds`
+explicitly, up to 21,600 seconds; the agent waits for the result. Cancellation
+and timeout stop the command's process group. For example:
+
+```text
+/call run_command {"command":"python3 scripts/long-task.py","timeout_seconds":3600}
+```
 Use a workspace you trust. A selected local `--profile` exposes only that
 pack’s native tools and its short instructions.
 

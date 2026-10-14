@@ -20,7 +20,7 @@ export function restoreHistory(raw: string | null): History {
       ['running', 'done', 'error'].includes(t.status) &&
       Number.isFinite(t.elapsedMs) && Number.isFinite(t.startedAt)
     ).map((t: Turn) => {
-      const events = t.events.filter(e => e && ['tool', 'tool_result', 'model', 'done', 'error'].includes(e.kind)).slice(-120);
+      const events = t.events.filter(e => e && ['progress', 'tool', 'tool_result', 'model', 'done', 'error'].includes(e.kind)).slice(-120);
       if (t.status === 'running') events.push({ kind: 'error', message: 'This reply was interrupted by a reload. Send a message to continue.' });
       return { ...t, events, status: t.status === 'running' ? 'error' : t.status };
     });

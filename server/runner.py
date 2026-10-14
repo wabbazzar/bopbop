@@ -9,8 +9,10 @@ Supported harnesses:
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import json
 import os
+import signal
 import time
 import sys
 
@@ -22,6 +24,36 @@ CONTEXT_DIR = os.path.expanduser(
     os.environ.get("BOPBOP_CONTEXT_DIR", "~/.bopbop/context")
 )
 SUPPORTED_HARNESSES = {"claude", "codex", "ollama"}
+HEARTBEAT_SECONDS = 5
+
+
+async def _lines_with_heartbeat(stream):
+    """Keep a quiet model or long tool connected without canceling its read."""
+    lines = stream.__aiter__()
+    pending = asyncio.create_task(anext(lines))
+    try:
+        while True:
+            ready, _ = await asyncio.wait({pending}, timeout=HEARTBEAT_SECONDS)
+            if not ready:
+                yield None
+                continue
+            try:
+                line = pending.result()
+            except StopAsyncIteration:
+                break
+            yield line
+            pending = asyncio.create_task(anext(lines))
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+async def _stderr_tail(stream):
+    tail = b''
+    if stream:
+        while chunk := await stream.read(4096):
+            tail = (tail + chunk)[-4000:]
+    return tail.decode('utf-8', errors='replace')
 
 
 def agent_harness() -> str:
@@ -264,59 +296,64 @@ async def run_turn(
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
         limit=64 * 1024 * 1024,
     )
 
     emitted_error = False
     codex_last_message: str | None = None
     tool_started_ms: dict[str, int] = {}
+    stderr_task = asyncio.create_task(_stderr_tail(proc.stderr))
     try:
         assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        async with aclosing(_lines_with_heartbeat(proc.stdout)) as lines:
+            async for raw in lines:
+                if raw is None:
+                    yield {'kind': 'progress', 'elapsed_ms': int((time.monotonic() - started) * 1000)}
+                    continue
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            if (
-                harness == "codex"
-                and ev.get("type") == "item.completed"
-                and (ev.get("item") or {}).get("type") == "agent_message"
-            ):
-                text = (ev.get("item") or {}).get("text")
-                if text:
-                    codex_last_message = text
-                continue
-            if (
-                harness == "codex"
-                and ev.get("type") == "turn.completed"
-                and codex_last_message
-            ):
-                yield {"kind": "text", "delta": codex_last_message}
-                codex_last_message = None
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                if (
+                    harness == "codex"
+                    and ev.get("type") == "item.completed"
+                    and (ev.get("item") or {}).get("type") == "agent_message"
+                ):
+                    text = (ev.get("item") or {}).get("text")
+                    if text:
+                        codex_last_message = text
+                    continue
+                if (
+                    harness == "codex"
+                    and ev.get("type") == "turn.completed"
+                    and codex_last_message
+                ):
+                    yield {"kind": "text", "delta": codex_last_message}
+                    codex_last_message = None
 
-            normalized = ([ev] if harness == "ollama" and ev.get("kind")
-                          else _codex_events(ev, elapsed_ms) if harness == "codex"
-                          else _claude_events(ev))
-            for item in normalized:
-                if harness != "ollama" and item.get("id"):
-                    if item.get("kind") == "tool":
-                        tool_started_ms[item["id"]] = elapsed_ms
-                    elif item.get("kind") == "tool_result":
-                        tool_start = tool_started_ms.pop(item["id"], None)
-                        if tool_start is not None:
-                            item["duration_ms"] = max(0, elapsed_ms - tool_start)
-                emitted_error = emitted_error or item.get("kind") == "error"
-                yield item
+                normalized = ([ev] if harness == "ollama" and ev.get("kind")
+                              else _codex_events(ev, elapsed_ms) if harness == "codex"
+                              else _claude_events(ev))
+                for item in normalized:
+                    if harness != "ollama" and item.get("id"):
+                        if item.get("kind") == "tool":
+                            tool_started_ms[item["id"]] = elapsed_ms
+                        elif item.get("kind") == "tool_result":
+                            tool_start = tool_started_ms.pop(item["id"], None)
+                            if tool_start is not None:
+                                item["duration_ms"] = max(0, elapsed_ms - tool_start)
+                    emitted_error = emitted_error or item.get("kind") == "error"
+                    yield item
 
         rc = await proc.wait()
         if rc != 0 and not emitted_error:
-            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
-            detail = stderr_bytes.decode("utf-8", errors="replace")[:500]
+            detail = (await stderr_task)[-500:]
             yield {
                 "kind": "error",
                 "message": f"{harness} exited {rc}: {detail}",
@@ -324,5 +361,13 @@ async def run_turn(
 
     finally:
         if proc.returncode is None:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                os.killpg(proc.pid, signal.SIGKILL)
             await proc.wait()
+        await stderr_task

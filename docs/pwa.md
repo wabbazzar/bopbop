@@ -89,6 +89,13 @@ URLs, build output, or offline cache. Re-enter it in another tab/device.
   a newline. Unknown future kinds are ignored. Malformed known events, oversized
   lines, HTTP errors, and streams missing a terminal event fail visibly. A failed
   turn can retain partial text; it isn't silently treated as a completed answer.
+- The server sends `progress` heartbeats every five seconds while an agent is
+  quiet, including model loading, prompt evaluation and long tool calls.
+  Trace shows the last server heartbeat separately from first visible text.
+  A heartbeat confirms the connection is active; it does not report tokens or
+  completed work. Local model failures arrive as structured error events.
+  Browser network failures explain that execution may have started and advise
+  checking status before retrying.
 
 ## Server settings
 

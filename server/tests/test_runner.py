@@ -1,7 +1,33 @@
 import asyncio
 import json
+import sys
 
 import runner
+
+
+def test_quiet_agent_sends_heartbeats_and_drains_stderr(monkeypatch, tmp_path):
+    script = ('import sys,time\nsys.stderr.write("x"*200000);sys.stderr.flush()\n'
+              'time.sleep(.15)\nprint(\'{"kind":"done"}\',flush=True)\n')
+    monkeypatch.setattr(runner, '_build_args', lambda *args: ('ollama', [sys.executable, '-c', script]))
+    monkeypatch.setattr(runner, 'CONTEXT_DIR', str(tmp_path))
+    monkeypatch.setattr(runner, 'HEARTBEAT_SECONDS', .02)
+    async def collect():
+        return [event async for event in runner.run_turn('unused')]
+    events = asyncio.run(asyncio.wait_for(collect(), timeout=3))
+    assert events[-1] == {'kind': 'done'}
+    assert any(event['kind'] == 'progress' and event['elapsed_ms'] > 0 for event in events)
+
+
+def test_failed_agent_reports_the_error_tail_without_blocking(monkeypatch, tmp_path):
+    script = 'import sys\nsys.stderr.write("x"*200000+"\\nconcrete failure\\n");sys.exit(7)\n'
+    monkeypatch.setattr(runner, '_build_args', lambda *args: ('ollama', [sys.executable, '-c', script]))
+    monkeypatch.setattr(runner, 'CONTEXT_DIR', str(tmp_path))
+    async def collect():
+        return [event async for event in runner.run_turn('unused')]
+    events = asyncio.run(asyncio.wait_for(collect(), timeout=3))
+    assert events[-1]['kind'] == 'error'
+    assert 'concrete failure' in events[-1]['message']
+    assert len(events[-1]['message']) < 550
 
 
 CODEX_CONTEXT_PREFIX = (
@@ -157,7 +183,7 @@ def test_codex_turn_emits_only_final_agent_message(monkeypatch):
             return lines()
 
     class FakeStderr:
-        async def read(self):
+        async def read(self, *unused):
             return b""
 
     class FakeProcess:

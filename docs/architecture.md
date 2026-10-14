@@ -64,6 +64,11 @@ for the active turn; process signaling and reaping belong to that worker.
 Plain and managed terminals share command filtering in `bopbop_tool_ui.py`.
 Both display declarations owned by the engine or enabled packs.
 
+The server runner drains both output pipes and emits heartbeats during silent
+work. Workspace-specific instructions belong in the workspace's `BOPBOP.md`
+or skill documents. The harness provides generic tools and timeouts; media
+workflows and their protection rules stay in the owning workspace.
+
 The file browser, inspector, and key bindings still live together in the
 managed terminal. Extract them when a change gives them independent state or
 behavior that needs an owner, rather than splitting by line count alone.

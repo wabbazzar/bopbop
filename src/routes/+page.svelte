@@ -136,6 +136,9 @@
           update(t => ({ ...t, harness: event.agent_harness, model: event.model, profile: event.profile }));
         }
         else if (event.kind === 'text') append(stripper.feed(event.delta));
+        else if (event.kind === 'progress') {
+          update(t => ({ ...t, events: [...t.events.filter(e => e.kind !== 'progress'), event] }));
+        }
         else {
           update(t => ({ ...t, events: [...t.events.slice(-119), boundedTrace(event)],
             status: event.kind === 'error' ? 'error' : t.status }));

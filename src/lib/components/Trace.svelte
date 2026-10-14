@@ -5,6 +5,7 @@
   const usage = $derived(done?.kind === 'done' ? done.usage : undefined);
   const tools = $derived(turn.events.filter(e => e.kind === 'tool').length);
   const models = $derived(turn.events.filter(e => e.kind === 'model').length);
+  const heartbeat = $derived(turn.events.findLast(e => e.kind === 'progress'));
   const cachedTokens = $derived(usage?.cached_tokens ?? usage?.cached_input_tokens ?? usage?.cache_read_input_tokens);
   const cacheMeasured = $derived(!turn.events.some(e => e.kind === 'model' && e.cache_measured === false));
   function ms(n: unknown): string {
@@ -34,6 +35,9 @@
       {#if turn.profile}<div><dt>Context pack</dt><dd>{turn.profile}</dd></div>{/if}
       <div><dt>First visible text</dt><dd>{ms(turn.firstTextMs)}</dd></div>
       <div><dt>Browser round trip</dt><dd>{ms(elapsedMs)}</dd></div>
+      {#if heartbeat?.kind === 'progress'}
+        <div><dt>Last server heartbeat</dt><dd>{ms(heartbeat.elapsed_ms)}</dd></div>
+      {/if}
       {#if done?.kind === 'done' && done.duration_ms !== undefined}
         <div><dt>Agent duration</dt><dd>{ms(done.duration_ms)}</dd></div>
       {/if}

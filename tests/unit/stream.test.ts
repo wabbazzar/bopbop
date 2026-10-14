@@ -43,6 +43,21 @@ test('HTTP authentication errors and truncated turns are actionable', async () =
     await assert.rejects(async () => { for await (const _ of streamChat('hi', null, null)) {} }, /before the reply finished/);
   } finally { globalThis.fetch = original; }
 });
+test('heartbeats keep quiet work visible and network errors explain uncertain execution', async () => {
+  const original = globalThis.fetch;
+  try {
+    assert.deepEqual(parseEvent('{"kind":"progress","elapsed_ms":5000}'), { kind: 'progress', elapsed_ms: 5000 });
+    globalThis.fetch = async () => new Response('{"kind":"progress","elapsed_ms":5000}\n{"kind":"done"}\n');
+    const events = []; for await (const event of streamChat('hello', null, null)) events.push(event);
+    assert.deepEqual(events.map(e => e.kind), ['progress', 'done']);
+    globalThis.fetch = async () => { throw new TypeError('Load failed'); };
+    await assert.rejects(async () => { for await (const _ of streamChat('hello', null, null)) {} }, /check its status before retrying/);
+    globalThis.fetch = async () => new Response(new ReadableStream({
+      start(controller) { controller.error(new TypeError('Load failed')); }
+    }));
+    await assert.rejects(async () => { for await (const _ of streamChat('hello', null, null)) {} }, /Connection to BopBop/);
+  } finally { globalThis.fetch = original; }
+});
 test('emote tags are removed at every boundary without losing visible text', () => {
   const source = 'Hello <emote>winking</emote> world <emote>happy</emote>!';
   for (let i = 0; i <= source.length; i++) {

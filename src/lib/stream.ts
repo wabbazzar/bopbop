@@ -6,6 +6,7 @@ export type Usage = {
 export type ChatEvent =
   | { kind: 'meta'; conversation_id: string; agent_harness?: string; model?: string; profile?: string }
   | { kind: 'text'; delta: string }
+  | { kind: 'progress'; elapsed_ms: number }
   | { kind: 'tool'; name: string; args: unknown; id?: string }
   | { kind: 'tool_result'; name: string; ok: boolean; id?: string; preview?: string;
       duration_ms?: number; state?: string; report?: string; response_bytes?: number;
@@ -28,7 +29,7 @@ export function parseEvent(line: string): ChatEvent | null {
   const required: Record<string, Record<string, string>> = {
     meta: { conversation_id: 'string' }, text: { delta: 'string' },
     tool: { name: 'string' }, tool_result: { name: 'string', ok: 'boolean' },
-    model: {}, done: {}, error: { message: 'string' }
+    progress: { elapsed_ms: 'number' }, model: {}, done: {}, error: { message: 'string' }
   };
   // Forward-compatible: ignore unknown kinds, fail visibly on malformed known events.
   if (!Object.hasOwn(required, ev.kind)) return null;
@@ -71,20 +72,27 @@ export async function* streamChat(
 ): AsyncGenerator<ChatEvent> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
-  const res = await fetch('/api/chat', {
-    method: 'POST', headers,
-    body: JSON.stringify({ message, conversation_id: conversationId }), signal
-  });
-  if (!res.ok) {
-    throw new Error(res.status === 401
-      ? 'Access token required or incorrect. Open Settings to enter it.'
-      : `The server could not start this reply (HTTP ${res.status}). Try again.`);
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({ message, conversation_id: conversationId }), signal
+    });
+    if (!res.ok) {
+      throw new Error(res.status === 401
+        ? 'Access token required or incorrect. Open Settings to enter it.'
+        : `The server could not start this reply (HTTP ${res.status}). Try again.`);
+    }
+    if (!res.body) throw new Error('The server returned an empty response.');
+    let terminal = false;
+    for await (const ev of readEvents(res.body)) {
+      if (ev.kind === 'done' || ev.kind === 'error') terminal = true;
+      yield ev;
+    }
+    if (!terminal) throw new Error('Connection ended before the reply finished. Send a message to continue.');
+  } catch (error) {
+    if (error instanceof TypeError && !signal?.aborted) {
+      throw new Error('Connection to BopBop was interrupted. The request may have started; reconnect and check its status before retrying.');
+    }
+    throw error;
   }
-  if (!res.body) throw new Error('The server returned an empty response.');
-  let terminal = false;
-  for await (const ev of readEvents(res.body)) {
-    if (ev.kind === 'done' || ev.kind === 'error') terminal = true;
-    yield ev;
-  }
-  if (!terminal) throw new Error('Connection ended before the reply finished. Send a message to continue.');
 }

@@ -3,6 +3,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import pty
 import re
@@ -157,6 +158,43 @@ def test_builtin_reference_is_owned_by_declaration_and_excluded_from_model(local
     assert 'Fresh declaration description' in json.dumps(runtime.tools)
     local.show_tools(runtime, local.Display(False))
     assert 'Fresh declaration description' in capsys.readouterr().err
+
+
+def test_compact_context_and_skill_discovery_do_not_load_large_wrapper_instructions(local, tmp_path):
+    (tmp_path / 'BOPBOP.md').write_text('Concise local rules. Follow the requested skill.')
+    (tmp_path / 'CLAUDE.md').write_text('Large wrapper instructions.' * 3000)
+    (tmp_path / 'AGENTS.md').write_text('Read CLAUDE.md in full.')
+    for root in ('.agents/skills', '.claude/skills'):
+        skill = tmp_path / root / 'test-skill/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('Skill-owned instructions')
+    prompt = local.system_prompt(tmp_path, local.AgentRuntime())
+    assert 'Concise local rules' in prompt and 'Large wrapper instructions' not in prompt
+    assert prompt.count('test-skill:') == 1
+    assert '.agents/skills/test-skill/SKILL.md' in prompt
+    assert 'read_file' in prompt
+    assert local.execute(tmp_path, 'read_file', {'path': '.agents/skills/test-skill/SKILL.md'}) == 'Skill-owned instructions'
+    (tmp_path / 'BOPBOP.md').unlink()
+    assert 'Large wrapper instructions' in local.system_prompt(tmp_path, local.AgentRuntime())
+
+
+@pytest.mark.parametrize('timeout', [0, -1, True, 1.5, 21601])
+def test_command_timeout_is_validated_for_model_selected_calls(local, tmp_path, timeout):
+    assert local.execute(tmp_path, 'run_command', {'command': 'unused', 'timeout_seconds': timeout}).startswith('ERROR:')
+
+
+def test_command_timeout_cleans_up_children(local, tmp_path):
+    script = tmp_path / 'parent.py'
+    script.write_text('import os,signal,subprocess,sys,time\n'
+                      'child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(20)"])\n'
+                      'open("child.pid","w").write(str(child.pid))\n'
+                      'signal.signal(signal.SIGTERM,lambda *args: (child.wait(),sys.exit(0)))\n'
+                      'time.sleep(20)\n')
+    result = local.execute(tmp_path, 'run_command', {'command': shlex.join([sys.executable, str(script)]),
+                                                  'timeout_seconds': 1})
+    assert result.startswith('ERROR:') and 'timed out' in result
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / 'child.pid').read_text()), 0)
 
 
 @pytest.mark.parametrize('cursor', [0, 8, 20, 50, 80])

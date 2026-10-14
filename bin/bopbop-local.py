@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import pathlib
+import signal
 import shlex
 import subprocess
 import sys
@@ -104,8 +105,10 @@ WORKSPACE_TOOLS = [
          returns="written on success, or ERROR: followed by the failure.",
          examples=[{"arguments": {"path": "<path>", "content": "<content>"}}]),
     tool("run_command", "Run an argv command in the working directory, without a shell. Commands have the current user's permissions.",
-         {"command": {"type": "string"}}, ["command"],
-         documentation="Executes immediately with your permissions. Uses shlex argv splitting without a shell; pipes and shell expansion are not interpreted. Timeout: 30 seconds.",
+         {"command": {"type": "string"},
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 21600,
+                              "description": "Default 30. Set explicitly for a long workflow and wait for its result."}}, ["command"],
+         documentation="Executes immediately with your permissions. Uses shlex argv splitting without a shell; pipes and shell expansion are not interpreted. Default timeout: 30 seconds; explicit maximum: 6 hours. Cancellation stops the command process group.",
          returns="exit=N followed by the last 12,000 characters of combined stdout/stderr; ERROR: for dispatch failures.",
          examples=[{"arguments": {"command": "pwd"}}]),
 ]
@@ -137,8 +140,24 @@ def execute(workspace: pathlib.Path, name: str, args: dict) -> str:
             argv = shlex.split(args["command"])
             if not argv:
                 return "ERROR: empty command"
-            proc = subprocess.run(argv, cwd=workspace, capture_output=True, text=True, timeout=30)
-            return f"exit={proc.returncode}\n{(proc.stdout + proc.stderr)[-12000:]}"
+            timeout = args.get('timeout_seconds', 30)
+            if type(timeout) is not int or not 1 <= timeout <= 21600:
+                return 'ERROR: timeout_seconds must be an integer from 1 to 21600'
+            with subprocess.Popen(argv, cwd=workspace, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
+                try:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                    return f"exit={proc.returncode}\n{(stdout + stderr)[-12000:]}"
+                finally:
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                        try:
+                            proc.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
         return f"ERROR: unknown tool {name}"
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
         return f"ERROR: {exc}"
@@ -371,10 +390,20 @@ def system_prompt(workspace: pathlib.Path, runtime: AgentRuntime | None = None) 
                  "Do not claim an all-clear for unqueried domains. "
                  "For [channel: signal], reply briefly without markdown. "
                  "For [channel: pwa], start with <emote>happy</emote>. Strip channel markers."]
-    for filename in (() if runtime and runtime.profile else ("AGENTS.md", "CLAUDE.md", "personality.md")):
+    files = ("BOPBOP.md",) if (workspace / 'BOPBOP.md').is_file() else ("AGENTS.md", "CLAUDE.md", "personality.md")
+    for filename in (() if runtime and runtime.profile else files):
         path = workspace / filename
         if path.is_file():
             parts.append(f"\n--- {filename} ---\n{path.read_text(encoding='utf-8')}")
+    if not runtime or not runtime.profile:
+        skills = {}
+        for directory in ('.agents/skills', '.claude/skills'):
+            for path in sorted((workspace / directory).glob('*/SKILL.md')):
+                if path.resolve().is_relative_to(workspace):
+                    skills.setdefault(path.parent.name, path.relative_to(workspace).as_posix())
+        if skills:
+            parts.append('Available workspace skills. Before using a skill, read its SKILL.md with read_file:\n'
+                         + '\n'.join(f'- {name}: {path}' for name, path in skills.items()))
     if runtime and runtime.registry:
         parts.append(runtime.registry.instructions)
     return "\n".join(parts)
@@ -668,6 +697,9 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
 
 def jsonl_session(args, workspace: pathlib.Path, runtime: AgentRuntime | None = None) -> None:
     """Server transport for the same local agent loop used by the terminal UI."""
+    def cancel(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, cancel)
     session_dir = pathlib.Path(os.path.expanduser(os.environ.get(
         "BOPBOP_DATA_DIR", "~/.bopbop/data"))) / "ollama_sessions"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -695,7 +727,11 @@ def jsonl_session(args, workspace: pathlib.Path, runtime: AgentRuntime | None = 
     class QuietDisplay:
         def event(self, *unused, **kwargs):
             pass
-    answer, _ = turn(args.model, messages, workspace, args.context, QuietDisplay(), emit=emit, runtime=runtime)
+    try:
+        answer, _ = turn(args.model, messages, workspace, args.context, QuietDisplay(), emit=emit, runtime=runtime)
+    except (OSError, ValueError, RuntimeError, KeyboardInterrupt) as exc:
+        emit({'kind': 'error', 'message': f'Local agent failed: {type(exc).__name__}: {exc}'})
+        return
     if not answer.startswith("Stopped "):
         tmp = session_dir / f".{session_id}.{os.getpid()}.tmp"
         with tmp.open("w", encoding="utf-8") as file:
