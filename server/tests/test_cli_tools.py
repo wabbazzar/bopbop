@@ -586,3 +586,18 @@ def test_tool_browser_and_call_suggestions_in_real_terminal(installed, tmp_path)
             process.wait(timeout=5)
         os.close(master)
         os.close(slave)
+
+
+def test_unknown_workspace_tool_explains_recovery(local, tmp_path):
+    result = local.execute(tmp_path, 'search', {'path': '.', 'query': 'reset'})
+    assert result.startswith('ERROR: unknown tool search')
+    assert 'run_command' in result and 'rg -n PATTERN PATH' in result
+    assert not list(tmp_path.iterdir())
+
+
+def test_workspace_investigation_guidance_is_not_added_to_profiles(local, tmp_path):
+    prompt = local.system_prompt(tmp_path, local.AgentRuntime())
+    assert 'rg -n reset bin' in prompt
+    assert 'do not edit files' in prompt
+    profile = local.system_prompt(tmp_path, local.AgentRuntime(profile='dashboard'))
+    assert 'rg -n reset bin' not in profile
