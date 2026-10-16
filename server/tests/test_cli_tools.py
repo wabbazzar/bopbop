@@ -609,3 +609,21 @@ def test_command_wrong_type_returns_correctable_error(local, tmp_path, command):
     assert result.startswith('ERROR: command must be a string')
     assert '"command": "rg -n PATTERN PATH"' in result
     assert local.execute(tmp_path, 'run_command', {'command': 'pwd'}).startswith('exit=0')
+
+
+@pytest.mark.parametrize('finish_at,expected_calls', [(13, 13), (100, 24)])
+def test_workspace_investigation_budget(local, tmp_path, monkeypatch, finish_at, expected_calls):
+    calls = []
+    def chat(model, messages, context, step, display, runtime):
+        calls.append(step)
+        message = ({'role': 'assistant', 'content': 'verified answer'} if step == finish_at else
+                   {'role': 'assistant', 'content': '', 'tool_calls': [
+                       {'function': {'name': 'list_files', 'arguments': {}}}]})
+        return message, local.ModelStats(0, None, 0, 0, 0, 0, 0, 0, 0, 0)
+    monkeypatch.setattr(local, 'chat', chat)
+    answer, _ = local.turn('fixture', [{'role': 'system', 'content': 'fixture'},
+        {'role': 'user', 'content': 'investigate'}], tmp_path, 16384, local.Display(False),
+        runtime=local.AgentRuntime())
+    assert len(calls) == expected_calls
+    assert answer == ('verified answer' if finish_at == 13 else
+                      'Stopped after 24 model steps without a final reply.')
