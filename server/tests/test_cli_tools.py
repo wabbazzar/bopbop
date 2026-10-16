@@ -611,10 +611,13 @@ def test_command_wrong_type_returns_correctable_error(local, tmp_path, command):
     assert local.execute(tmp_path, 'run_command', {'command': 'pwd'}).startswith('exit=0')
 
 
-@pytest.mark.parametrize('finish_at,expected_calls', [(13, 13), (100, 24)])
+@pytest.mark.parametrize('finish_at,expected_calls', [(13, 13), (25, 25), (100, 25)])
 def test_workspace_investigation_budget(local, tmp_path, monkeypatch, finish_at, expected_calls):
     calls = []
-    def chat(model, messages, context, step, display, runtime):
+    def chat(model, messages, context, step, display, runtime, **kwargs):
+        if step == 25:
+            assert kwargs == {"allow_tools": False}
+            assert "tool budget is exhausted" in messages[-1]["content"]
         calls.append(step)
         message = ({'role': 'assistant', 'content': 'verified answer'} if step == finish_at else
                    {'role': 'assistant', 'content': '', 'tool_calls': [
@@ -625,7 +628,7 @@ def test_workspace_investigation_budget(local, tmp_path, monkeypatch, finish_at,
         {'role': 'user', 'content': 'investigate'}], tmp_path, 16384, local.Display(False),
         runtime=local.AgentRuntime())
     assert len(calls) == expected_calls
-    assert answer == ('verified answer' if finish_at == 13 else
+    assert answer == ('verified answer' if finish_at in (13, 25) else
                       'Stopped after 24 model steps without a final reply.')
 
 

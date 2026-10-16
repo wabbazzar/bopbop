@@ -297,10 +297,10 @@ def _activity(stop: threading.Event, started: float, progress: dict,
 
 
 def chat(model: str, messages: list[dict], context: int, step: int,
-         display: Display, runtime: AgentRuntime | None = None) -> tuple[dict, ModelStats]:
+         display: Display, runtime: AgentRuntime | None = None, *, allow_tools=True) -> tuple[dict, ModelStats]:
     runtime = runtime or AgentRuntime()
     thinking = runtime.thinking if runtime.thinking is not None else ("low" if "gpt-oss" in model.lower() else False)
-    payload = {"model": model, "messages": messages, "tools": runtime.tools,
+    payload = {"model": model, "messages": messages, "tools": runtime.tools if allow_tools else [],
                "stream": True, "think": thinking,
                "options": {"num_ctx": context, "temperature": 0,
                            "num_predict": runtime.max_output_tokens}, "keep_alive": "10m"}
@@ -657,7 +657,8 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
     usage = initial_usage or TurnStats()
     turn_started = time.monotonic() - usage.wall_s
     steps = 4 if runtime.profile else 24
-    for step in range(steps):
+    for step in range(steps + (0 if runtime.profile else 1)):
+        final_step = step == steps
         # Remove complete old turns before each model call, preserving pairs.
         budget = min(context * 2, 32768)
         runtime.pruned = []
@@ -676,7 +677,15 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
             if emit:
                 emit({"kind": "error", "message": answer})
             return answer, usage
-        message, stats = chat(model, messages, context, step + 1, display, runtime)
+        if final_step:
+            final_request = messages + [{"role": "system", "content":
+                "The tool budget is exhausted. Answer the user's question from the evidence already "
+                "collected. No further tools are available. Distinguish verified findings from uncertainty; "
+                "do not invent missing behavior, file paths, methods or fixes. If evidence is insufficient, "
+                "say what remains unknown. Give the smallest supported change list for an investigation."}]
+            message, stats = chat(model, final_request, context, step + 1, display, runtime, allow_tools=False)
+        else:
+            message, stats = chat(model, messages, context, step + 1, display, runtime)
         show_stats(stats, context, display)
         if emit:
             emit({"kind": "model", "step": step + 1, "prompt_tokens": stats.prompt_tokens,
@@ -702,6 +711,9 @@ def turn(model: str, messages: list[dict], workspace: pathlib.Path,
             return answer, usage
         messages.append(message)
         calls = message.get("tool_calls") or []
+        if final_step and calls:
+            messages.pop()  # A backend ignoring the no-tools request cannot execute more work.
+            break
         if calls and runtime.review_only:
             messages.pop()
             raise ValueError('Model requested a tool during editor review; no tool was executed')
