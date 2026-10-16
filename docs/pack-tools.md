@@ -224,7 +224,9 @@ includes `cache_measured:false`. A zero counter alone does not prove no reuse.
 GPT OSS defaults to low thinking and a 512-token per-call budget for profiles;
 use `--think` or `--max-output` to change it. A generation limit stops the turn
 without publishing an incomplete answer. Profiles allow four model steps per
-turn and four tool calls total; general workspace turns allow twelve model steps.
+turn and four tool calls total; general workspace turns allow 24 tool-capable model steps plus one final-answer
+request with tools disabled. That last request summarizes collected evidence
+and uncertainty; it cannot execute additional tools.
 Old complete turns are removed together before each call. A current profile turn
 that exceeds the conservative history byte budget stops explicitly rather than
 sending an oversized prompt.
