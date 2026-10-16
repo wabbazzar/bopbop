@@ -643,3 +643,29 @@ def test_read_file_ranges_and_truncation_are_explicit(local, tmp_path):
     result = local.execute(tmp_path, 'read_file', {'path': 'source.py'})
     assert len(result) == 16000 and '\n[TRUNCATED:' in result
     assert 'start_line/end_line' in result
+
+
+def test_prompt_provenance_tracks_mode_files_packs_and_tools(local, installed, tmp_path):
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    (workspace / 'AGENTS.md').write_text('WORKSPACE RULES')
+    (workspace / 'CLAUDE.md').write_text('WRAPPER RULES')
+    registry = Registry(installed.parents[1], ['test'])
+    for profile, use_pack in [(None, False), (None, True), ('test', True)]:
+        runtime = local.AgentRuntime(registry if use_pack else None, profile)
+        prompt = local.system_prompt(workspace, runtime)
+        provenance = json.loads(prompt.rsplit('\n', 1)[1])
+        assert provenance['base_prompt'] == ('dashboard' if profile else 'workspace')
+        assert provenance['profile'] == profile
+        assert provenance['selected_packs'] == (['sample'] if use_pack else [])
+        assert provenance['available_tools'] == [d['name'] for d, _ in runtime.tool_definitions]
+        assert provenance['workspace_instruction_files'] == ([] if profile else ['AGENTS.md', 'CLAUDE.md'])
+        assert ('WORKSPACE RULES' in prompt) == (not profile)
+        assert ('You are BopBop, a local assistant.' in prompt) == (not profile)
+        assert ('You are BopBop, a concise dashboard assistant.' in prompt) == bool(profile)
+    (workspace / 'BOPBOP.md').write_text('COMPACT RULES')
+    prompt = local.system_prompt(workspace, local.AgentRuntime(registry))
+    provenance = json.loads(prompt.rsplit('\n', 1)[1])
+    assert provenance['workspace_instruction_files'] == ['BOPBOP.md']
+    assert 'WORKSPACE RULES' not in prompt and 'WRAPPER RULES' not in prompt
+    assert 'COMPACT RULES' in prompt
