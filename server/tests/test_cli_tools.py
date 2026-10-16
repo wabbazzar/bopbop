@@ -601,3 +601,11 @@ def test_workspace_investigation_guidance_is_not_added_to_profiles(local, tmp_pa
     assert 'do not edit files' in prompt
     profile = local.system_prompt(tmp_path, local.AgentRuntime(profile='dashboard'))
     assert 'rg -n reset bin' not in profile
+
+
+@pytest.mark.parametrize('command', [None, ['rg', '-n', 'reset'], 42, {'argv': 'rg'}])
+def test_command_wrong_type_returns_correctable_error(local, tmp_path, command):
+    result = local.execute(tmp_path, 'run_command', {'command': command})
+    assert result.startswith('ERROR: command must be a string')
+    assert '"command": "rg -n PATTERN PATH"' in result
+    assert local.execute(tmp_path, 'run_command', {'command': 'pwd'}).startswith('exit=0')

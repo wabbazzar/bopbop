@@ -139,6 +139,8 @@ def execute(workspace: pathlib.Path, name: str, args: dict) -> str:
             path.write_text(args["content"], encoding="utf-8")
             return "written"
         if name == "run_command":
+            if not isinstance(args.get("command"), str):
+                return 'ERROR: command must be a string, for example {"command": "rg -n PATTERN PATH"}; not an argv array'
             argv = shlex.split(args["command"])
             if not argv:
                 return "ERROR: empty command"
