@@ -68,6 +68,10 @@ Start a new session to load new system instructions.
 Browser and Signal use saved server settings with environment defaults. The
 server freezes settings per turn. `server/runner.py:_build_args()` passes the
 chosen profile to native Ollama via `--profile`; CLI configuration is separate.
+The native JSONL entry point rebuilds its system prompt on each invocation.
+When resuming a saved conversation, it appends saved messages after the old
+system message, keeping the newly built system prompt. This differs from an
+already-running local terminal, which retains its system message.
 
 Claude Code and Codex use their own harness instructions. Their BopBop pack
 integration lives in `bin/bopbop_packs.py:wrapper_options()`: Claude receives

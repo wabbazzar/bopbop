@@ -650,6 +650,11 @@ def test_prompt_provenance_tracks_mode_files_packs_and_tools(local, installed, t
     workspace.mkdir()
     (workspace / 'AGENTS.md').write_text('WORKSPACE RULES')
     (workspace / 'CLAUDE.md').write_text('WRAPPER RULES')
+    skill = workspace / '.agents/skills/example/SKILL.md'
+    skill.parent.mkdir(parents=True)
+    skill.write_text('UNLOADED SKILL BODY')
+    (workspace / 'docs').mkdir()
+    (workspace / 'docs/prompt-routing.md').write_text('Routing reference')
     registry = Registry(installed.parents[1], ['test'])
     for profile, use_pack in [(None, False), (None, True), ('test', True)]:
         runtime = local.AgentRuntime(registry if use_pack else None, profile)
@@ -657,6 +662,9 @@ def test_prompt_provenance_tracks_mode_files_packs_and_tools(local, installed, t
         provenance = json.loads(prompt.rsplit('\n', 1)[1])
         assert provenance['base_prompt'] == ('dashboard' if profile else 'workspace')
         assert provenance['profile'] == profile
+        assert provenance['skill_index'] == ({} if profile else {'example': '.agents/skills/example/SKILL.md'})
+        assert ('routing_reference' in provenance) == (not profile)
+        assert 'UNLOADED SKILL BODY' not in prompt
         assert provenance['selected_packs'] == (['sample'] if use_pack else [])
         assert provenance['available_tools'] == [d['name'] for d, _ in runtime.tool_definitions]
         assert provenance['workspace_instruction_files'] == ([] if profile else ['AGENTS.md', 'CLAUDE.md'])
