@@ -254,3 +254,6 @@ For the four-tool specialist, select Ice in browser Settings instead. Saved
 Settings override the `BOPBOP_AGENT_PROFILE` env default. Wrapper harnesses
 (Claude/Codex) use that selected profile's MCP tools; `BOPBOP_AGENT_PACKS` is
 specific to the local Ollama harness.
+
+For base-prompt selection, workspace versus profile behavior, and offline
+inspection commands, see [prompt routing](prompt-routing.md).

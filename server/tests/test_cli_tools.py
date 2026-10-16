@@ -669,3 +669,29 @@ def test_prompt_provenance_tracks_mode_files_packs_and_tools(local, installed, t
     assert provenance['workspace_instruction_files'] == ['BOPBOP.md']
     assert 'WORKSPACE RULES' not in prompt and 'WRAPPER RULES' not in prompt
     assert 'COMPACT RULES' in prompt
+
+
+def test_prompt_preview_cli_resolves_flags_and_env_without_model(installed, tmp_path):
+    workspace = tmp_path / 'preview-workspace'
+    workspace.mkdir()
+    (workspace / 'AGENTS.md').write_text('PREVIEW WORKSPACE RULES')
+    env = {k: v for k, v in os.environ.items() if not k.startswith('BOPBOP_')}
+    env.update(BOPBOP_OLLAMA_HOST='http://127.0.0.1:1')
+    command = [sys.executable, str(ROOT / 'bin/bopbop-local.py'), '--show-prompt',
+               '--workspace', str(workspace), '--context-dir', str(installed.parents[1])]
+    for flags, overrides, expected in [([], {}, 'workspace'),
+            (['--packs', 'sample'], {}, 'workspace'),
+            (['--profile', 'test'], {}, 'dashboard'),
+            ([], {'BOPBOP_AGENT_PROFILE': 'test'}, 'dashboard'),
+            (['--profile', ''], {'BOPBOP_AGENT_PROFILE': 'test', 'BOPBOP_AGENT_PACKS': 'sample'}, 'workspace')]:
+        result = subprocess.run(command + flags, env={**env, **overrides}, text=True,
+                                capture_output=True, timeout=10, check=True)
+        preview = json.loads(result.stdout)
+        assert preview['kind'] == 'prompt_preview'
+        provenance = json.loads(preview['system_prompt'].rsplit('\n', 1)[1])
+        assert provenance['base_prompt'] == expected
+        assert provenance['available_tools'] == [tool['function']['name'] for tool in preview['tools']]
+        assert ('PREVIEW WORKSPACE RULES' in preview['system_prompt']) == (expected == 'workspace')
+        assert not (installed / 'called').exists()
+    invalid = subprocess.run(command + ['do something'], env=env, capture_output=True, text=True)
+    assert invalid.returncode != 0 and 'cannot be combined' in invalid.stderr

@@ -464,9 +464,15 @@ def system_prompt(workspace: pathlib.Path, runtime: AgentRuntime | None = None) 
         "workspace_instruction_files": loaded_files,
         "skill_index": skills,
         "selected_packs": [p.name for p in runtime.registry.packs] if runtime and runtime.registry else [],
-        "available_tools": [d["name"] for d, _ in runtime.tool_definitions] if runtime else
+        "available_tools": [t["function"]["name"] for t in runtime.tools] if runtime else
                            [d["name"] for d in WORKSPACE_TOOLS],
     }
+    if (not runtime or not runtime.profile) and (workspace / "docs/prompt-routing.md").is_file():
+        provenance["routing_reference"] = "docs/prompt-routing.md"
+        parts.append("For questions about this repository's system prompts, profiles, packs or harness "
+                     "routing, read docs/prompt-routing.md before answering. Verify launch examples with "
+                     "--show-prompt when the selected packs are installed. Do not infer a selected "
+                     "profile merely from a flag's presence; verify its parsed value.")
     parts.append("Prompt provenance (for this generated native Ollama prompt):\n"
                  "Tool calls return evidence; they do not select or replace the system prompt. "
                  "This describes the prompt when built, not a claim about a different session or harness.\n"
@@ -836,9 +842,13 @@ def main():
     parser.add_argument("--think", choices=("low","medium","high","false","true"),
                         help="model thinking control (GPT OSS defaults to low)")
     parser.add_argument("--max-output", type=int, help="per-model-call generation limit")
+    parser.add_argument("--show-prompt", action="store_true",
+                        help="print fresh native system prompt and tool schemas as JSON, without calling a model")
     parser.add_argument("--jsonl", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--session-id", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.show_prompt and (args.prompt or args.jsonl or args.session_id):
+        parser.error("--show-prompt cannot be combined with a question or session transport")
     workspace = args.workspace.expanduser().resolve()
     if not workspace.is_dir():
         parser.error(f"not a directory: {workspace}")
@@ -858,6 +868,10 @@ def main():
         parser.error("--max-output must be 64–8192")
     thinking = {"false": False, "true": True}.get(args.think, args.think)
     runtime = AgentRuntime(registry, args.profile, thinking, maximum, args.context_dir.expanduser().resolve())
+    if args.show_prompt:
+        print(json.dumps({"kind": "prompt_preview", "system_prompt": system_prompt(workspace, runtime),
+                          "tools": runtime.tools}, ensure_ascii=False, indent=2))
+        return
     if args.jsonl:
         if not args.prompt:
             parser.error("--jsonl requires a prompt")
