@@ -94,10 +94,12 @@ WORKSPACE_TOOLS = [
          documentation="Omit path to list the workspace root. Paths must remain inside the workspace.",
          returns="Sorted names, with / for directories; text capped at 8,000 characters.",
          examples=[{"arguments": {}}]),
-    tool("read_file", "Read a UTF-8 file under the working directory",
-         {"path": {"type": "string"}}, ["path"],
+    tool("read_file", "Read a UTF-8 file, optionally a 1-based inclusive line range",
+         {"path": {"type": "string"},
+          "start_line": {"type": "integer", "minimum": 1},
+          "end_line": {"type": "integer", "minimum": 1}}, ["path"],
          documentation="Read UTF-8 text. Paths must remain inside the workspace, including symlink targets.",
-         returns="File text capped at 16,000 characters, or ERROR: followed by the failure.",
+         returns="File text capped at 16,000 characters with an explicit truncation notice. Optional start_line/end_line select a 1-based inclusive range. ERROR: followed by the failure.",
          examples=[{"arguments": {"path": "<path>"}}]),
     tool("write_file", "Replace a UTF-8 file under the working directory with exact content",
          {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"],
@@ -131,7 +133,20 @@ def execute(workspace: pathlib.Path, name: str, args: dict) -> str:
                 return "ERROR: not a directory"
             return "\n".join(p.name + ("/" if p.is_dir() else "") for p in sorted(path.iterdir()))[:8000]
         if name == "read_file":
-            return confined(workspace, args["path"]).read_text(encoding="utf-8")[:16000]
+            unexpected = set(args) - {"path", "start_line", "end_line"}
+            if unexpected:
+                return 'ERROR: read_file accepts path, start_line and end_line; unsupported: ' + ', '.join(sorted(unexpected))
+            text = confined(workspace, args["path"]).read_text(encoding="utf-8")
+            start, end = args.get("start_line", 1), args.get("end_line")
+            if type(start) is not int or start < 1 or (end is not None and
+                    (type(end) is not int or end < start)):
+                return 'ERROR: start_line/end_line must be positive integers with end_line >= start_line'
+            if "start_line" in args or end is not None:
+                text = ''.join(text.splitlines(keepends=True)[start - 1:end])
+            if len(text) > 16000:
+                notice = '\n[TRUNCATED: more text exists. Use read_file with start_line/end_line or run_command with rg -n -C 15 to inspect the relevant code.]'
+                return text[:16000 - len(notice)] + notice
+            return text
         if name == "write_file":
             path = confined(workspace, args["path"])
             if not path.parent.is_dir():

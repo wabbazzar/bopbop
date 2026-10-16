@@ -627,3 +627,16 @@ def test_workspace_investigation_budget(local, tmp_path, monkeypatch, finish_at,
     assert len(calls) == expected_calls
     assert answer == ('verified answer' if finish_at == 13 else
                       'Stopped after 24 model steps without a final reply.')
+
+
+def test_read_file_ranges_and_truncation_are_explicit(local, tmp_path):
+    path = tmp_path / 'source.py'
+    path.write_text('first\nsecond\nthird\n')
+    assert local.execute(tmp_path, 'read_file', {'path': 'source.py', 'start_line': 2, 'end_line': 2}) == 'second\n'
+    assert local.execute(tmp_path, 'read_file', {'path': 'source.py', 'start_line': 3}) == 'third\n'
+    for args in ({'start_line': 0}, {'start_line': True}, {'start_line': 3, 'end_line': 2}, {'line_start': 2}):
+        assert local.execute(tmp_path, 'read_file', {'path': 'source.py', **args}).startswith('ERROR:')
+    path.write_text('x' * 17000)
+    result = local.execute(tmp_path, 'read_file', {'path': 'source.py'})
+    assert len(result) == 16000 and '\n[TRUNCATED:' in result
+    assert 'start_line/end_line' in result
